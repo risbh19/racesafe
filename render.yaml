@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: racesafe
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
