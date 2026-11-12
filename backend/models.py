@@ -3,7 +3,7 @@ from sqlalchemy import (
     ForeignKeyConstraint, Identity, Index, Integer, String,
     UniqueConstraint, func, text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, mapped_column
 
 
@@ -69,7 +69,7 @@ class Team(Base):
             name="ck_teams_locked_minimum",
         ),
         Index(
-            "ix_teams_board", "hackathon_id", "created_at", "id",
+            "ix_teams_board", "hackathon_id", "id",
             postgresql_where=text("looking AND locked_at IS NULL AND member_count < max_size"),
         ),
     )
@@ -109,3 +109,61 @@ class TeamMember(Base):
     user_id = mapped_column(BigInteger, primary_key=True)
     hackathon_id = mapped_column(BigInteger, nullable=False)
     joined_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class InviteCode(Base):
+    __tablename__ = "invite_codes"
+    __table_args__ = (
+        Index("ix_invite_team", "team_id", unique=True, postgresql_where=text("revoked_at IS NULL")),
+    )
+
+    code_hash = mapped_column(String(64), primary_key=True)
+    team_id = mapped_column(BigInteger, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    created_by = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    expires_at = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at = mapped_column(DateTime(timezone=True))
+
+
+class JoinRequest(Base):
+    __tablename__ = "join_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'declined', 'cancelled')",
+            name="ck_join_request_status",
+        ),
+        Index("ix_join_pending", "team_id", "user_id", unique=True,
+              postgresql_where=text("status = 'pending'")),
+        Index("ix_join_user", "user_id", "id"),
+    )
+
+    id = mapped_column(BigInteger, Identity(), primary_key=True)
+    team_id = mapped_column(BigInteger, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    user_id = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    message = mapped_column(String(300), nullable=False, server_default="")
+    status = mapped_column(String(10), nullable=False, server_default="pending")
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    decided_at = mapped_column(DateTime(timezone=True))
+    decided_by = mapped_column(BigInteger, ForeignKey("users.id"))
+
+
+class IdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+
+    user_id = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    key = mapped_column(String(100), primary_key=True)
+    request_hash = mapped_column(String(64), nullable=False)
+    response = mapped_column(JSONB)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_team", "hackathon_id", "team_id", "id"),)
+
+    id = mapped_column(BigInteger, Identity(), primary_key=True)
+    hackathon_id = mapped_column(BigInteger, nullable=False)
+    team_id = mapped_column(BigInteger, nullable=False)
+    actor_id = mapped_column(BigInteger, nullable=False)
+    action = mapped_column(String(40), nullable=False)
+    details = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

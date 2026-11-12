@@ -1,0 +1,66 @@
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+ID = Annotated[int, Field(ge=1, le=9223372036854775807)]
+Skill = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=30)]
+Skills = Annotated[list[Skill], Field(max_length=10)]
+TimeOffset = Annotated[int, Field(ge=-720, le=840)]
+TeamName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=40)]
+
+
+class Input(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class Login(Input):
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class Register(Login):
+    password: str = Field(min_length=10, max_length=128)
+    display_name: str = Field(min_length=2, max_length=60)
+    skills: Skills = Field(default_factory=list)
+    utc_offset_minutes: TimeOffset = 0
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class ProfileEdit(Input):
+    display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=60)]
+    skills: Skills
+    utc_offset_minutes: TimeOffset
+    looking: bool
+
+
+class TeamInput(Input):
+    name: TeamName
+    description: str = Field(default="", max_length=500)
+    needed_skills: Skills = Field(default_factory=list)
+    looking: bool = True
+
+
+class InviteInput(Input):
+    code: str = Field(pattern=r"^[A-Z2-7]{12}$")
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
+
+
+class JoinInput(Input):
+    message: str = Field(default="", max_length=300)
+
+
+def normalized_skills(skills: list[str]) -> list[str]:
+    return sorted({skill.lower() for skill in skills})

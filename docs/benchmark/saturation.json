@@ -1,0 +1,12 @@
+{
+  "base_url": "http://127.0.0.1:58000",
+  "vus": 100,
+  "duration": "60s",
+  "pace_seconds": 0,
+  "successful_board_requests": 96830,
+  "median_ms": 21.6072,
+  "p95_ms": 34.8339,
+  "p99_ms": 1430.3195860000026,
+  "error_rate": 0,
+  "board_requests_per_second": 1611.4734137783146
+}

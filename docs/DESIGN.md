@@ -1,0 +1,13 @@
+# RaceSafe design
+
+**Data model.** Users enroll in a hackathon through participants. Teams store a leader, minimum and maximum size, and a counter. A membership references both the participant and the team in the same hackathon. A unique (hackathon_id, user_id) prevents multiple memberships. Join requests, invite digests, idempotency responses, and audit events have separate tables.
+
+**Seat claims.** Invite redemption and leader acceptance share one transaction. It locks the applicant's participant row, then the team row, checks permissions and the current request or invite, and conditionally increments the counter only when an unlocked seat exists. Inserting the membership, marking the accepted request, cancelling the user's other pending requests, writing audit events, and scheduling live invalidation are part of that transaction. Errors roll back the reserved seat. Leader changes and last-member deletion lock the team row too. The oldest remaining member wins succession, with user ID breaking ties.
+
+**Retries.** Create, redeem, request, and accept use a user-scoped idempotency key. An insert on the key's unique index serializes identical retries. The response commits with the operation. Reusing a key with different input is rejected. Failed transactions remain retryable.
+
+**Realtime.** Each mutation sends a PostgreSQL notification at commit. It invalidates the first-page board cache and tells React to refetch. Board snapshots expire after one second as a backstop, and clients also refetch on reconnect. Slow subscribers get one pending invalidation. The audit log is append-only and independent of team deletion.
+
+**Security and ranking.** Argon2id stores passwords. Expiring bearer tokens authenticate requests. Team mutations check permissions inside transactions. Invite codes have 60 bits of entropy, store only an HMAC digest, expire after 24 hours, and are throttled per user and IP. Suggestions score missing or novel skills at 70% and average circular UTC offset proximity at 30%. Fixed offsets do not model daylight-saving changes.
+
+**Trade-offs.** The service uses one API worker with in-memory rate limits, which reset on restart. Board enrollment checks cache positive results for 30 seconds. Enrollment stays active when a participant leaves a team, and direct database revocations can take up to 30 seconds to reach the board. Set a stable secret outside local development. The counter is maintained by team transactions, and tests check it against actual membership rows. With another week, use shared rate limiting, track IANA zones and actual availability, add browser accessibility tests and benchmark the public deployment.

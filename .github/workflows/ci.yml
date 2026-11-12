@@ -1,0 +1,57 @@
+name: RaceSafe CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: racesafe
+          POSTGRES_PASSWORD: racesafe_ci
+          POSTGRES_DB: racesafe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U racesafe -d racesafe_test"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://racesafe:racesafe_ci@127.0.0.1:5432/racesafe_test
+      TEST_DATABASE_URL: postgresql+asyncpg://racesafe:racesafe_ci@127.0.0.1:5432/racesafe_test
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m alembic upgrade head
+      - run: python -m pytest -q
+      - run: python -m pytest -q tests/test_concurrency.py --count=5
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build

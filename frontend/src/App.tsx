@@ -1,122 +1,155 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { ApiError, makeApi, skillList, utcLabel, type Profile } from './api'
+import { JoinDialog } from './components/JoinDialog'
+import { useEvents } from './hooks/useEvents'
+import { AuthPage } from './pages/AuthPage'
+import { BoardPage } from './pages/BoardPage'
+import { TeamPage } from './pages/TeamPage'
 import './App.css'
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const [token, setToken] = useState('')
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [teamId, setTeamId] = useState<number | null>(null)
+  const [join, setJoin] = useState(false)
+  const [revision, setRevision] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null)
+  const actionBusy = useRef(false)
+  const api = useMemo(() => makeApi(token), [token])
+  const refresh = () => setRevision((current) => current + 1)
+  const connected = useEvents(token, profile?.hackathon_id, refresh)
+
+  useEffect(() => {
+    if (!token) return
+    let active = true
+    void api<Profile>('/me').then((data) => {
+      if (active) setProfile(data)
+    }).catch((error: unknown) => {
+      if (!active) return
+      if (error instanceof ApiError && error.status === 401) {
+        setToken('')
+        setProfile(null)
+        setTeamId(null)
+        setJoin(false)
+      } else {
+        setNotice({ text: (error as Error).message, error: true })
+      }
+    })
+    return () => { active = false }
+  }, [api, token, revision])
+
+  function signOut() {
+    setToken('')
+    setProfile(null)
+    setTeamId(null)
+    setJoin(false)
+    setNotice(null)
+  }
+
+  async function run(action: () => Promise<void>, success?: string) {
+    if (actionBusy.current) return
+    actionBusy.current = true
+    setBusy(true)
+    setNotice(null)
+    try {
+      await action()
+      if (success) {
+        setNotice({ text: success, error: false })
+        refresh()
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        signOut()
+      } else {
+        setNotice({ text: (error as Error).message, error: true })
+        if (error instanceof ApiError && error.status === 409) refresh()
+      }
+    } finally {
+      actionBusy.current = false
+      setBusy(false)
+    }
+  }
+
+  function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    void run(async () => {
+      await api('/me', {
+        method: 'PATCH',
+        body: {
+          display_name: form.get('name'),
+          skills: skillList(String(form.get('skills') ?? '')),
+          utc_offset_minutes: Number(form.get('utc_offset_minutes')),
+          looking: form.has('looking'),
+        },
+      })
+    }, 'Profile saved.')
+  }
+
+  if (!token) return <AuthPage signedIn={setToken} />
 
   return (
     <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+      <a className="skip" href="#content">Skip to content</a>
+      <header className="topbar">
+        <div className="shell topbar-content">
+          <button type="button" className="brand" onClick={() => setTeamId(null)}>RaceSafe</button>
+          <nav className="row nav" aria-label="Main">
+            <button type="button" aria-pressed={teamId === null} onClick={() => setTeamId(null)}>Board</button>
+            {profile?.team && <button type="button" aria-pressed={teamId === profile.team.id} onClick={() => setTeamId(profile.team!.id)}>My team</button>}
+            {profile && !profile.team && <button type="button" onClick={() => setJoin(true)}>Join with code</button>}
+            <button type="button" onClick={signOut}>Sign out</button>
+          </nav>
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+      </header>
 
-      <div className="ticks"></div>
+      <main id="content" className="shell content" tabIndex={-1}>
+        {notice && <p role={notice.error ? 'alert' : 'status'} className={notice.error ? 'error' : 'notice'}>{notice.text}</p>}
+        {!profile && <div className="panel"><p>{notice ? 'Could not load your profile.' : 'Loading your profile…'}</p>
+          {notice && <button type="button" onClick={refresh}>Retry</button>}</div>}
+        {profile && (
+          <>
+            <div className="meta-bar">
+              <span>{profile.display_name} · {utcLabel(profile.utc_offset_minutes)}</span>
+              <span className={connected ? 'live' : 'muted'}>{connected ? 'Live updates on' : 'Connecting live updates…'}</span>
+            </div>
+            {teamId === null
+              ? <BoardPage api={api} profile={profile} revision={revision} busy={busy} run={run} openTeam={setTeamId} />
+              : <TeamPage key={teamId} api={api} profile={profile} teamId={teamId} revision={revision} busy={busy} run={run} back={() => setTeamId(null)} />}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+            {profile.requests.length > 0 && <details className="panel">
+              <summary>My join requests</summary>
+              <ul className="item-list">
+                {profile.requests.map((request) => (
+                  <li key={request.id}>
+                    <span><strong>{request.team_name}</strong> · {request.status}</span>
+                    {request.status === 'pending' && <button type="button" disabled={busy} onClick={() => void run(async () => {
+                      await api('/join-requests/' + request.id, { method: 'DELETE' })
+                    }, 'Join request cancelled.')}>Cancel</button>}
+                  </li>
+                ))}
+              </ul>
+            </details>}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
+            <details className="panel">
+              <summary>My profile</summary>
+              <form className="stack inset" onSubmit={saveProfile}>
+                <label>Display name<input name="name" minLength={2} maxLength={60} defaultValue={profile.display_name} required /></label>
+                <label>Skills<input name="skills" defaultValue={profile.skills.join(', ')} /></label>
+                <label>UTC offset in minutes<input type="number" min={-720} max={840} name="utc_offset_minutes" defaultValue={profile.utc_offset_minutes} required /></label>
+                {!profile.team && <label className="check"><input type="checkbox" name="looking" defaultChecked={profile.looking} />Show me on the people board</label>}
+                <button disabled={busy}>Save profile</button>
+              </form>
+            </details>
+          </>
+        )}
+      </main>
+      {join && <JoinDialog api={api} close={() => setJoin(false)} joined={(id) => {
+        setTeamId(id)
+        setNotice({ text: 'You joined the team.', error: false })
+        refresh()
+      }} />}
     </>
   )
 }
-
-export default App
