@@ -1,0 +1,86 @@
+name: RaceSafe 10k login benchmark
+
+on:
+  push:
+    branches:
+      - codex/login-burst-10k
+
+permissions:
+  contents: read
+
+jobs:
+  login-burst:
+    name: Login burst (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [shared-ip, distinct-ips]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: racesafe
+          POSTGRES_PASSWORD: login_bench_ci
+          POSTGRES_DB: racesafe_login_benchmark
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U racesafe -d racesafe_login_benchmark"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://racesafe:login_bench_ci@127.0.0.1:5432/racesafe_login_benchmark
+      LOGIN_BENCH_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Prepare synthetic credentials
+        run: |
+          python - <<'PY'
+          import os
+          import secrets
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              for key in ("JWT_SECRET", "LOGIN_BENCH_PASSWORD"):
+                  value = secrets.token_hex(32)
+                  print(f"::add-mask::{value}")
+                  print(f"{key}={value}", file=env)
+          PY
+      - name: Migrate and seed the disposable database
+        run: |
+          python -m alembic upgrade head
+          PYTHONPATH="$PWD" python .github/login-benchmark/seed_login.py
+      - name: Measure the login burst
+        shell: bash
+        run: |
+          nproc
+          ulimit -n
+          python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --no-access-log --backlog 16384 > "$RUNNER_TEMP/login-api.log" 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8000/api/health; then
+              break
+            fi
+            kill -0 "$api_pid"
+            sleep 1
+          done
+          curl --silent --fail --max-time 2 http://127.0.0.1:8000/api/health
+          if ! python .github/login-benchmark/login_burst.py; then
+            tail -n 60 "$RUNNER_TEMP/login-api.log"
+            exit 1
+          fi
+          printf 'SQLAlchemy pool timeout exceptions: '
+          grep -c 'sqlalchemy.exc.TimeoutError: QueuePool' "$RUNNER_TEMP/login-api.log" || true
+      - name: Upload measured results
+        uses: actions/upload-artifact@v7
+        with:
+          name: login-benchmark-${{ matrix.mode }}
+          path: login-benchmark.json
