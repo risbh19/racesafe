@@ -37,7 +37,7 @@ def enter(page: Page, field: str, value: str) -> None:
 
 
 def register(page: Page, role: str) -> None:
-    page.goto(ORIGIN)
+    page.goto(ORIGIN, wait_until="domcontentloaded")
     activate(page, page.get_by_role("button", name="Create a RaceSafe account"))
     enter(page, "Display name", f"Demo {role}")
     enter(page, "Email", f"walkthrough-{role.lower()}@example.test")
@@ -134,6 +134,7 @@ def main() -> None:
             expect(cards.last.get_by_role("heading", name=last_retained, exact=True)).to_be_visible()
 
             caption(applicant, "2 · Live update arrived and all 40 cards stayed loaded")
+            applicant.wait_for_timeout(1500)
             activate(applicant, applicant.get_by_role("button", name=f"View {TEAM}"))
             fits_viewport(applicant)
             enter(applicant, "Message to the team leader", "I can help with the prototype.")
@@ -141,11 +142,14 @@ def main() -> None:
             expect(applicant.get_by_text("Your request is pending.")).to_be_visible()
 
             caption(leader, "3 · Request appears live in the leader inbox")
+            expect(leader.get_by_role("button", name="Accept Demo Applicant")).to_be_visible()
+            leader.wait_for_timeout(1500)
             activate(leader, leader.get_by_role("button", name="Accept Demo Applicant"))
             expect(applicant.get_by_text("2/4 seats", exact=True)).to_be_visible()
             expect(applicant.get_by_role("button", name="Leave team")).to_be_visible()
             caption(applicant, "3 · Approval and seat count update without reloading")
             fits_viewport(applicant)
+            applicant.wait_for_timeout(1500)
 
             caption(leader, "4 · Expiring invite, teammate ranking and audit trail")
             activate(leader, leader.get_by_role("button", name="Generate invite code"))
