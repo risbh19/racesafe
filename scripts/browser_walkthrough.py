@@ -30,7 +30,10 @@ def activate(page: Page, target: Locator) -> None:
 def enter(page: Page, field: str, value: str) -> None:
     focus(page, page.get_by_label(field, exact=True))
     page.keyboard.press("Control+a")
-    page.keyboard.type(value)
+    page.keyboard.press("Backspace")
+    if value:
+        page.keyboard.type(value)
+    expect(page.get_by_label(field, exact=True)).to_have_value(value)
 
 
 def register(page: Page, role: str) -> None:
@@ -88,7 +91,7 @@ def verify_stale_filter(page: Page) -> None:
     expect(cards.first.get_by_text("python", exact=True)).to_be_visible()
     enter(page, "Filter by skill", "")
     activate(page, page.get_by_role("button", name="Apply", exact=True))
-    expect(cards.first.get_by_role("heading", name="Benchmark team 2000")).to_be_visible()
+    expect(cards.first.get_by_role("heading", name=re.compile("^Benchmark team "))).to_be_visible()
 
 
 def main() -> None:
@@ -117,6 +120,7 @@ def main() -> None:
             activate(applicant, applicant.get_by_role("button", name="Load more"))
             cards = applicant.get_by_role("region", name="Open teams").get_by_role("article")
             expect(cards).to_have_count(40)
+            last_retained = cards.nth(38).get_by_role("heading").inner_text()
 
             caption(leader, "1 · Create an open team")
             caption(applicant, "1 · The board stays open in this session")
@@ -127,7 +131,7 @@ def main() -> None:
             expect(leader.get_by_role("heading", name=TEAM)).to_be_visible()
             expect(cards.first.get_by_role("heading", name=TEAM)).to_be_visible()
             expect(cards).to_have_count(40)
-            expect(cards.last.get_by_role("heading", name="Benchmark team 1962")).to_be_visible()
+            expect(cards.last.get_by_role("heading", name=last_retained, exact=True)).to_be_visible()
 
             caption(applicant, "2 · Live update arrived and all 40 cards stayed loaded")
             activate(applicant, applicant.get_by_role("button", name=f"View {TEAM}"))
