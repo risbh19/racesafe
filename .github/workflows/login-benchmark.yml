@@ -80,7 +80,20 @@ jobs:
           printf 'SQLAlchemy pool timeout exceptions: '
           grep -c 'sqlalchemy.exc.TimeoutError: QueuePool' "$RUNNER_TEMP/login-api.log" || true
       - name: Upload measured results
+        if: ${{ always() && hashFiles('login-benchmark.json') != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: login-benchmark-${{ matrix.mode }}
           path: login-benchmark.json
+      - name: Check expected login outcomes
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("login-benchmark.json").read_text())
+          expected = {"200": 40, "429": 9960} if os.environ["LOGIN_BENCH_MODE"] == "shared-ip" else {"200": 10000}
+          if report["outcomes"] != expected:
+              raise SystemExit(f"Unexpected login outcomes: {report['outcomes']}; expected {expected}")
+          PY

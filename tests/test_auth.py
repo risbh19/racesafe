@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,6 +66,41 @@ async def test_login_pool_timeout_returns_retryable_response(race, monkeypatch):
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "1"
     assert response.json() == {"detail": "Sign-in is busy. Try again shortly."}
+
+
+async def test_login_bounds_simultaneous_password_checks(race, monkeypatch):
+    assert (await race.client.post("/api/auth/register", json=ACCOUNT)).status_code == 201
+    limit = race.app.state.settings.login_concurrency
+    saturated = asyncio.Event()
+    release = asyncio.Event()
+    active = peak = 0
+
+    async def verify(_password, _digest):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == limit:
+            saturated.set()
+        try:
+            await release.wait()
+            return True
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(auth, "verify_password", verify)
+    payload = {"email": ACCOUNT["email"], "password": ACCOUNT["password"]}
+    requests = [
+        asyncio.create_task(race.client.post("/api/auth/login", json=payload))
+        for _ in range(limit + 1)
+    ]
+    try:
+        await asyncio.wait_for(saturated.wait(), timeout=5)
+        assert peak == limit
+    finally:
+        release.set()
+        results = await asyncio.gather(*requests, return_exceptions=True)
+    assert all(result.status_code == 200 for result in results)
+    assert peak == limit
 
 
 async def test_bad_login(race):

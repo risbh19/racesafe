@@ -44,24 +44,25 @@ async def login(data: Login, request: Request, session: Session):
     limiter = request.app.state.limiter
     limiter.take("login-ip", client_ip(request), limit=40)
     limiter.take("login-email", data.email, limit=10)
-    try:
-        # Return the connection before running the expensive password check.
-        async with session.begin():
-            result = await session.execute(
-                select(User.id, User.password_hash).where(User.email == data.email)
-            )
-            credentials = result.one_or_none()
-    except PoolTimeoutError as exc:
-        raise HTTPException(
-            503, "Sign-in is busy. Try again shortly.", headers={"Retry-After": "1"},
-        ) from exc
+    async with request.app.state.login_slots:
+        try:
+            # Return the connection before running the expensive password check.
+            async with session.begin():
+                result = await session.execute(
+                    select(User.id, User.password_hash).where(User.email == data.email)
+                )
+                credentials = result.one_or_none()
+        except PoolTimeoutError as exc:
+            raise HTTPException(
+                503, "Sign-in is busy. Try again shortly.", headers={"Retry-After": "1"},
+            ) from exc
 
-    user_id, digest = credentials if credentials is not None else (
-        None, request.app.state.dummy_password_hash,
-    )
-    if not await verify_password(data.password, digest) or user_id is None:
-        raise HTTPException(401, "Email or password is incorrect")
-    return {"access_token": issue_token(request, user_id), "token_type": "bearer"}
+        user_id, digest = credentials if credentials is not None else (
+            None, request.app.state.dummy_password_hash,
+        )
+        if not await verify_password(data.password, digest) or user_id is None:
+            raise HTTPException(401, "Email or password is incorrect")
+        return {"access_token": issue_token(request, user_id), "token_type": "bearer"}
 
 
 @router.get("/me")

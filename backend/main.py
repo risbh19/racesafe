@@ -49,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sessions = async_sessionmaker(app.state.engine, expire_on_commit=False)
     app.state.secret = settings.jwt_secret.get_secret_value() if settings.jwt_secret else secrets.token_hex(32)
     app.state.limiter = RateLimiter()
+    app.state.login_slots = asyncio.Semaphore(min(settings.login_concurrency, settings.database_pool_size - 1))
     app.state.board_cache = BoardCache()
     app.state.events = events.Events(settings.listener_dsn(), app.state.board_cache.invalidate)
     app.add_api_route("/api/health", health, methods=["GET"])
