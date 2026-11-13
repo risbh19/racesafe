@@ -1,4 +1,8 @@
 import pytest
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.routers import auth
 
 pytestmark = pytest.mark.asyncio
 ACCOUNT = {"email": "builder@example.test", "password": "long-enough-password", "display_name": "Builder"}
@@ -32,6 +36,34 @@ async def test_login(race):
     })
     assert response.status_code == 200
     assert response.json()["access_token"]
+
+
+async def test_login_releases_connection_before_password_check(race, monkeypatch):
+    assert (await race.client.post("/api/auth/register", json=ACCOUNT)).status_code == 201
+    verify_password = auth.verify_password
+
+    async def verify_without_connection(password, digest):
+        assert race.app.state.engine.pool.checkedout() == 0
+        return await verify_password(password, digest)
+
+    monkeypatch.setattr(auth, "verify_password", verify_without_connection)
+    response = await race.client.post("/api/auth/login", json={
+        "email": ACCOUNT["email"], "password": ACCOUNT["password"],
+    })
+    assert response.status_code == 200
+
+
+async def test_login_pool_timeout_returns_retryable_response(race, monkeypatch):
+    async def time_out(_session, _statement):
+        raise PoolTimeoutError("Test pool timeout")
+
+    monkeypatch.setattr(AsyncSession, "execute", time_out)
+    response = await race.client.post("/api/auth/login", json={
+        "email": ACCOUNT["email"], "password": ACCOUNT["password"],
+    })
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert response.json() == {"detail": "Sign-in is busy. Try again shortly."}
 
 
 async def test_bad_login(race):
