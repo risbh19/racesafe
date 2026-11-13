@@ -1,21 +1,31 @@
+import argparse
 import asyncio
+import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import text
 
 from backend.config import get_settings
 from backend.db import make_engine
-from backend.security import hash_password
+from backend.security import hash_password, issue_token
 
 VIEWER = "seed-10000@benchmark.racesafe.test"
+BOARD_VUS = 100
 
 
-async def seed():
+async def seed(board_tokens: Path | None = None):
+    settings = get_settings()
+    if board_tokens is not None:
+        if settings.jwt_secret is None:
+            raise SystemExit("Set JWT_SECRET to the same value used by the benchmark API.")
+        if board_tokens.exists():
+            raise SystemExit("Choose a new path for the benchmark token file.")
     password = os.environ.get("SEED_PASSWORD", "")
     if len(password) < 12:
         raise SystemExit("Set SEED_PASSWORD to at least 12 characters for the benchmark account.")
 
-    settings = get_settings()
     engine = make_engine(settings)
     params = {"hackathon_id": settings.hackathon_id, "viewer_hash": await hash_password(password)}
     try:
@@ -89,6 +99,17 @@ async def seed():
             """), params)
             if bad:
                 raise RuntimeError(f"Seat count invariant failed for {bad} seeded teams")
+            if board_tokens is not None:
+                ids = (await connection.scalars(text("""
+                    SELECT u.user_id FROM racesafe_seed_users AS u
+                    JOIN participants AS p ON p.user_id = u.user_id
+                    WHERE p.hackathon_id = :hackathon_id AND u.n > 6000
+                    ORDER BY u.n
+                    LIMIT :board_vus
+                """), {**params, "board_vus": BOARD_VUS})).all()
+                if len(ids) != BOARD_VUS:
+                    raise RuntimeError("Expected 100 enrolled benchmark viewers")
+
             await connection.execute(
                 text("SELECT pg_notify('racesafe_changes', :hackathon)"),
                 {"hackathon": str(settings.hackathon_id)},
@@ -96,10 +117,24 @@ async def seed():
         async with engine.begin() as connection:
             for table in ("users", "teams", "team_members", "participants"):
                 await connection.execute(text(f"ANALYZE {table}"))
+        if board_tokens is not None:
+            state = SimpleNamespace(
+                secret=settings.jwt_secret.get_secret_value(), settings=settings,
+            )
+            request = SimpleNamespace(app=SimpleNamespace(state=state))
+            tokens = [issue_token(request, user_id) for user_id in ids]
+            descriptor = os.open(board_tokens, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(tokens, output)
         print(f"Seeded 10,000 users, 2,000 teams and 6,000 memberships. Benchmark account: {VIEWER}")
     finally:
         await engine.dispose()
 
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    parser = argparse.ArgumentParser(description="Seed a disposable RaceSafe benchmark database.")
+    parser.add_argument(
+        "--board-tokens", type=Path, metavar="FILE",
+        help="Write one bearer token per benchmark VU to a new private file.",
+    )
+    asyncio.run(seed(parser.parse_args().board_tokens))
