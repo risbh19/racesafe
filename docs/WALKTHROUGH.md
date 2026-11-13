@@ -1,5 +1,7 @@
 # RaceSafe walkthrough
 
+[Download the walkthrough MP4 (ZIP)](https://github.com/risbh19/racesafe/actions/runs/43473115252/artifacts/14061753462).
+
 The **Browser walkthrough** job records two independent browser sessions against the built React app, FastAPI and a disposable PostgreSQL database. Open the [RaceSafe CI runs](https://github.com/risbh19/racesafe/actions/workflows/ci.yml), choose a successful run, and download the `racesafe-walkthrough` artifact. The MP4 is under five minutes.
 
 - Left side is the team leader on desktop. Right side is the applicant in a 390 px mobile viewport.

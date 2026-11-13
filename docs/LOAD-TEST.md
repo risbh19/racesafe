@@ -2,12 +2,12 @@
 
 ## GitHub Actions
 
-The [fix-branch validation run](https://github.com/risbh19/racesafe/actions/runs/43470830477) used one API process and PostgreSQL 16. Each 60-second run used 100 distinct authenticated virtual users with no pause between requests and fetched 20 teams from the first board page.
+The [fix-branch validation run](https://github.com/risbh19/racesafe/actions/runs/43473115252) used one API process and PostgreSQL 16. Each 60-second run used 100 distinct authenticated virtual users with no pause between requests and fetched 20 teams from the first board page.
 
 | Seed dataset | Board p95 | HTTP errors | Report |
 | --- | ---: | ---: | --- |
-| 10,000 users and 2,000 teams | 14.99 ms | 0% | [10,000-user JSON artifact](https://github.com/risbh19/racesafe/actions/runs/43470830477/artifacts/14060572045) |
-| 20,000 users and 2,000 teams | 15.05 ms | 0% | [20,000-user JSON artifact](https://github.com/risbh19/racesafe/actions/runs/43470830477/artifacts/14061681117) |
+| 10,000 users and 2,000 teams | 13.90 ms | 0% | [10,000-user JSON artifact](https://github.com/risbh19/racesafe/actions/runs/43473115252/artifacts/14061807702) |
+| 20,000 users and 2,000 teams | 18.53 ms | 0% | [20,000-user JSON artifact](https://github.com/risbh19/racesafe/actions/runs/43473115252/artifacts/14061743369) |
 
 Both runs met the p95 target of 200 ms. Render latency, concurrent login and SSE fan-out are outside this benchmark.
 
