@@ -41,14 +41,16 @@ $env:TEST_DATABASE_URL = $env:DATABASE_URL
 
 ## Board benchmark
 
-Use a separate benchmark database, apply the migration, and set the API and seed terminal to the same DATABASE_URL. Choose a password with at least 12 characters for the synthetic benchmark viewer and set SEED_PASSWORD in both the seed and k6 terminals. The seed creates 10,000 users, 2,000 teams and 6,000 memberships.
+[GitHub Actions](https://github.com/risbh19/racesafe/actions/workflows/ci.yml) runs separate 10,000-user and 20,000-user board benchmarks, each with a fresh PostgreSQL database, 2,000 teams and a local API process. Each of the 100 virtual users uses a distinct seeded account. Both CI runs last 60 seconds with no pause between requests. Download `board-benchmark-report-10000-users` and `board-benchmark-report-20000-users` from the workflow run for the measured p95 and error rate.
+
+Use a separate benchmark database, apply the migration, and set the API and seed terminal to the same DATABASE_URL. Choose a password with at least 12 characters for the synthetic benchmark viewer and set SEED_PASSWORD in both the seed and k6 terminals. By default the seed creates 10,000 users, 2,000 teams and 6,000 memberships. Pass `--users 20000` for the larger dataset. Use a fresh database for each size so prior seed data does not affect the comparison.
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.seed
 k6 run loadtest/board.js
 ```
 
-k6 defaults to port 8000 and 100 concurrent virtual users for 60 seconds with a one-second pause between requests per user. Set BASE_URL to target a different instance or PACE_SECONDS=0 to run a saturation test. The threshold is board p95 under 200 ms, zero HTTP errors, and all checks passing. See [load test report](docs/LOAD-TEST.md) and the generated JSON at loadtest/report.json.
+k6 defaults to port 8000 and 100 concurrent virtual users for 60 seconds with a one-second pause between requests per user. Set BASE_URL to target a different instance or PACE_SECONDS=0 to run a saturation test. The threshold is board p95 under 200 ms, zero HTTP errors, and all checks passing. See [load test report](docs/LOAD-TEST.md) and the generated JSON at `loadtest/report.json`. The default local run uses one shared benchmark account. To reproduce CI's distinct accounts, set the same `JWT_SECRET` in the seed and API terminals, run `python -m scripts.seed --board-tokens <new-file>`, and set `BOARD_TOKEN_FILE` to that file's absolute path when running k6. Keep that token file outside the repository.
 
 ## Deploy
 
