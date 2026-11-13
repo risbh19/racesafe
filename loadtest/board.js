@@ -59,6 +59,7 @@ export function handleSummary(data) {
   const summary = {
     base_url: base, vus, duration, pace_seconds: paceSeconds,
     authenticated_accounts: boardTokens === null ? 1 : vus,
+    seeded_users: __ENV.SEED_USERS ? Number(__ENV.SEED_USERS) : null,
     commit: __ENV.GITHUB_SHA || null,
     successful_board_requests: count, median_ms: latency.med, p95_ms: latency['p(95)'],
     p99_ms: latency['p(99)'], error_rate: errors.rate,

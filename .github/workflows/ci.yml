@@ -57,8 +57,13 @@ jobs:
       - run: npm run build
 
   board-benchmark:
+    name: Board benchmark (${{ matrix.seed_users }} seeded users)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        seed_users: [10000, 20000]
     services:
       postgres:
         image: postgres:16-alpine
@@ -74,6 +79,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://racesafe:racesafe_ci@127.0.0.1:5432/racesafe_benchmark
       PACE_SECONDS: '0'
+      SEED_USERS: ${{ matrix.seed_users }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -102,7 +108,7 @@ jobs:
       - name: Migrate and seed PostgreSQL
         run: |
           python -m alembic upgrade head
-          python -m scripts.seed --board-tokens "$BOARD_TOKEN_FILE"
+          python -m scripts.seed --users "$SEED_USERS" --board-tokens "$BOARD_TOKEN_FILE"
       - name: Run the 100-user board benchmark
         shell: bash
         run: |
@@ -123,5 +129,5 @@ jobs:
         if: ${{ always() && hashFiles('loadtest/report.json') != '' }}
         uses: actions/upload-artifact@v7
         with:
-          name: board-benchmark-report
+          name: board-benchmark-report-${{ matrix.seed_users }}-users
           path: loadtest/report.json

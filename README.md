@@ -41,9 +41,9 @@ $env:TEST_DATABASE_URL = $env:DATABASE_URL
 
 ## Board benchmark
 
-[GitHub Actions](https://github.com/risbh19/racesafe/actions/workflows/ci.yml) runs the board benchmark against a disposable PostgreSQL database and a local API process. Each of the 100 virtual users uses a distinct seeded account. The CI run lasts 60 seconds with no pause between requests. Download `board-benchmark-report` from the workflow run for the measured p95 and error rate.
+[GitHub Actions](https://github.com/risbh19/racesafe/actions/workflows/ci.yml) runs separate 10,000-user and 20,000-user board benchmarks, each with a fresh PostgreSQL database, 2,000 teams and a local API process. Each of the 100 virtual users uses a distinct seeded account. Both CI runs last 60 seconds with no pause between requests. Download `board-benchmark-report-10000-users` and `board-benchmark-report-20000-users` from the workflow run for the measured p95 and error rate.
 
-Use a separate benchmark database, apply the migration, and set the API and seed terminal to the same DATABASE_URL. Choose a password with at least 12 characters for the synthetic benchmark viewer and set SEED_PASSWORD in both the seed and k6 terminals. The seed creates 10,000 users, 2,000 teams and 6,000 memberships.
+Use a separate benchmark database, apply the migration, and set the API and seed terminal to the same DATABASE_URL. Choose a password with at least 12 characters for the synthetic benchmark viewer and set SEED_PASSWORD in both the seed and k6 terminals. By default the seed creates 10,000 users, 2,000 teams and 6,000 memberships. Pass `--users 20000` for the larger dataset. Use a fresh database for each size so prior seed data does not affect the comparison.
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.seed
