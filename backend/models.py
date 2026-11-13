@@ -29,6 +29,15 @@ class User(Base):
     utc_offset_minutes = mapped_column(Integer, nullable=False, server_default=text("0"))
 
 
+class PendingRegistration(Base):
+    __tablename__ = "pending_registrations"
+
+    token_hash = mapped_column(String(64), primary_key=True)
+    email = mapped_column(String(254), nullable=False)
+    expires_at = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    registration = mapped_column(JSONB, nullable=False)
+
+
 class Hackathon(Base):
     __tablename__ = "hackathons"
     __table_args__ = (

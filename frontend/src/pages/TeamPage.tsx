@@ -90,10 +90,16 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
 
   return (
     <>
-      <div className="row"><button type="button" onClick={back}>Back to board</button></div>
-      <header className="section-head">
+      <div className="row"><button className="back-button" type="button" onClick={back}><span aria-hidden="true">←</span> Back to board</button></div>
+      <header className="board-hero team-hero">
         <div><h1>{team.name}</h1>{team.description && <p>{team.description}</p>}</div>
-        <span className="seat-count">{team.member_count}/{team.max_size} seats · {team.locked ? 'Finalized' : 'Forming'}</span>
+        <div className="capacity">
+          <div className="capacity-label">
+            <span>{team.member_count}/{team.max_size} seats</span>
+            <span className="seat-count">{team.locked ? 'Finalized' : 'Forming'}</span>
+          </div>
+          <progress aria-label="Seats filled" value={team.member_count} max={team.max_size} />
+        </div>
       </header>
 
       <div className="two-columns">
@@ -102,8 +108,13 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
           <ul className="item-list">
             {team.members.map((person) => (
               <li key={person.id}>
-                <div><strong>{person.display_name}</strong>{person.id === team.leader_id && <span className="muted"> · Leader</span>}
-                  <div className="tags">{person.skills.map((skill) => <span key={skill}>{skill}</span>)}</div>
+                <div className="person-heading">
+                  <span className="avatar" aria-hidden="true">{person.display_name.slice(0, 1).toUpperCase()}</span>
+                  <div>
+                    <strong>{person.display_name}</strong>
+                    {person.id === team.leader_id && <span className="leader-label">Leader</span>}
+                    {person.skills.length > 0 && <div className="tags">{person.skills.map((skill) => <span key={skill}>{skill}</span>)}</div>}
+                  </div>
                 </div>
                 {leader && person.id !== profile.id && (
                   <button type="button" disabled={busy} aria-label={'Remove ' + person.display_name} onClick={() => {

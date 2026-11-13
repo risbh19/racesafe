@@ -90,16 +90,18 @@ export default function App() {
   if (!token) return <AuthPage signedIn={setToken} />
 
   return (
-    <>
+    <div className="workspace">
       <a className="skip" href="#content">Skip to content</a>
       <header className="topbar">
         <div className="shell topbar-content">
-          <button type="button" className="brand" onClick={() => setTeamId(null)}>RaceSafe</button>
+          <button type="button" className="brand" onClick={() => setTeamId(null)}>
+            <span className="brand-mark" aria-hidden="true">R</span>RaceSafe
+          </button>
           <nav className="row nav" aria-label="Main">
             <button type="button" aria-pressed={teamId === null} onClick={() => setTeamId(null)}>Board</button>
             {profile?.team && <button type="button" aria-pressed={teamId === profile.team.id} onClick={() => setTeamId(profile.team!.id)}>My team</button>}
             {profile && !profile.team && <button type="button" onClick={() => setJoin(true)}>Join with code</button>}
-            <button type="button" onClick={signOut}>Sign out</button>
+            <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
           </nav>
         </div>
       </header>
@@ -111,8 +113,13 @@ export default function App() {
         {profile && (
           <>
             <div className="meta-bar">
-              <span>{profile.display_name} · {utcLabel(profile.utc_offset_minutes)}</span>
-              <span className={connected ? 'live' : 'muted'}>{connected ? 'Live updates on' : 'Connecting live updates…'}</span>
+              <div className="person-heading">
+                <span className="avatar" aria-hidden="true">{profile.display_name.slice(0, 1).toUpperCase()}</span>
+                <div><strong>{profile.display_name}</strong><p>{utcLabel(profile.utc_offset_minutes)}</p></div>
+              </div>
+              <span className={connected ? 'connection live' : 'connection'} role="status">
+                {connected ? 'Live updates on' : 'Connecting…'}
+              </span>
             </div>
             {teamId === null
               ? <BoardPage api={api} profile={profile} revision={revision} busy={busy} run={run} openTeam={setTeamId} />
@@ -150,6 +157,6 @@ export default function App() {
         setNotice({ text: 'You joined the team.', error: false })
         refresh()
       }} />}
-    </>
+    </div>
   )
 }

@@ -75,7 +75,7 @@ async def race():
     settings = Settings(
         database_url=url, direct_database_url=url, _env_file=None,
         jwt_secret="test-only-signing-secret-with-at-least-32-characters",
-        hackathon_id=1, database_pool_size=50,
+        hackathon_id=1, database_pool_size=50, require_email_verification=False,
     )
     app = create_app(settings)
     async with app.router.lifespan_context(app):
@@ -83,7 +83,7 @@ async def race():
             actual = await connection.scalar(text("SELECT current_database()"))
             assert actual.endswith("_test")
             await connection.execute(text(
-                "TRUNCATE idempotency_keys, join_requests, invite_codes, "
+                "TRUNCATE pending_registrations, idempotency_keys, join_requests, invite_codes, "
                 "team_members, teams, participants, users CONTINUE IDENTITY"
             ))
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

@@ -62,6 +62,19 @@ The root Dockerfile builds the React assets and starts one FastAPI process servi
 
 A demo can use [Render's free web service and PostgreSQL options](https://render.com/docs/free). Free web services sleep when idle and free Render databases expire after 30 days. See [port and service settings](https://render.com/docs/web-services).
 
+### Enable email verification on Render
+
+Add these variables to the RaceSafe web service and redeploy. Store the sending key in Render's environment settings.
+
+| Variable | Value |
+| --- | --- |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` |
+| `PUBLIC_APP_URL` | Your app's HTTPS origin, for example `https://racesafe.onrender.com` |
+| `RESEND_API_KEY` | A sending key from [Resend](https://resend.com/) |
+| `VERIFICATION_FROM_EMAIL` | A sender on a [verified Resend domain](https://resend.com/docs/dashboard/domains/introduction) |
+
+New signups receive a single-use link that expires after 30 minutes. They enter the signup password to create the account and receive a JWT. The signup form can request another link after expiration or a delivery failure. Existing accounts can sign in with their current credentials. Verification is disabled by default until the sending provider is configured.
+
 ## Design and submission
 
 - [Design note](docs/DESIGN.md)
