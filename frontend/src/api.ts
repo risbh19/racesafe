@@ -36,13 +36,13 @@ export class ApiError extends Error {
   }
 }
 
-export type Api = <T>(
-  path: string, options?: { method?: string; body?: unknown; idempotent?: boolean },
-) => Promise<T>
+type RequestOptions = { method?: string; body?: unknown; idempotent?: boolean; signal?: AbortSignal }
+
+export type Api = <T>(path: string, options?: RequestOptions) => Promise<T>
 
 export function makeApi(token?: string): Api {
   return async function request<T>(
-    path: string, options: { method?: string; body?: unknown; idempotent?: boolean } = {},
+    path: string, options: RequestOptions = {},
   ): Promise<T> {
     const headers = new Headers()
     if (token) headers.set('Authorization', 'Bearer ' + token)
@@ -56,6 +56,7 @@ export function makeApi(token?: string): Api {
       method: options.method,
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
     }
 
     let response: Response

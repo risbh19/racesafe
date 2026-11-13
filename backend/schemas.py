@@ -1,12 +1,23 @@
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+def validate_database_text(value: str) -> str:
+    if "\0" in value:
+        raise ValueError("Text cannot contain a NUL character")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Text must be valid UTF-8") from exc
+    return value
+
+
+DatabaseText = Annotated[str, AfterValidator(validate_database_text)]
 ID = Annotated[int, Field(ge=1, le=9223372036854775807)]
-Skill = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=30)]
+Skill = Annotated[DatabaseText, StringConstraints(strip_whitespace=True, min_length=1, max_length=30)]
 Skills = Annotated[list[Skill], Field(max_length=10)]
 TimeOffset = Annotated[int, Field(ge=-720, le=840)]
-TeamName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=40)]
+TeamName = Annotated[DatabaseText, StringConstraints(strip_whitespace=True, min_length=3, max_length=40)]
 
 
 class Input(BaseModel):
@@ -14,7 +25,7 @@ class Input(BaseModel):
 
 
 class Login(Input):
-    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email: DatabaseText = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(min_length=1, max_length=128)
 
     @field_validator("email", mode="before")
@@ -25,7 +36,7 @@ class Login(Input):
 
 class Register(Login):
     password: str = Field(min_length=10, max_length=128)
-    display_name: str = Field(min_length=2, max_length=60)
+    display_name: DatabaseText = Field(min_length=2, max_length=60)
     skills: Skills = Field(default_factory=list)
     utc_offset_minutes: TimeOffset = 0
 
@@ -41,7 +52,7 @@ class VerifyEmail(Input):
 
 
 class ProfileEdit(Input):
-    display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=60)]
+    display_name: Annotated[DatabaseText, StringConstraints(strip_whitespace=True, min_length=2, max_length=60)]
     skills: Skills
     utc_offset_minutes: TimeOffset
     looking: bool
@@ -49,7 +60,7 @@ class ProfileEdit(Input):
 
 class TeamInput(Input):
     name: TeamName
-    description: str = Field(default="", max_length=500)
+    description: DatabaseText = Field(default="", max_length=500)
     needed_skills: Skills = Field(default_factory=list)
     looking: bool = True
 
@@ -64,7 +75,7 @@ class InviteInput(Input):
 
 
 class JoinInput(Input):
-    message: str = Field(default="", max_length=300)
+    message: DatabaseText = Field(default="", max_length=300)
 
 
 def normalized_skills(skills: list[str]) -> list[str]:

@@ -6,14 +6,14 @@ from sqlalchemy import any_, select
 
 from backend.db import Session
 from backend.models import Participant, Team, TeamMember, User
-from backend.schemas import ID
+from backend.schemas import DatabaseText, ID
 from backend.security import CurrentUser
 from backend.services.suggestions import score_candidate
 from backend.services.teams import participant, require_leader, team_summary
 
 router = APIRouter(prefix="/api")
 Limit = Annotated[int, Query(ge=1, le=100)]
-SkillFilter = Annotated[str | None, Query(min_length=1, max_length=30)]
+SkillFilter = Annotated[DatabaseText | None, Query(min_length=1, max_length=30)]
 
 
 def looking_users(hackathon_id: int):

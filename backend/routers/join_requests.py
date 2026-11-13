@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 
 from backend.db import Session
@@ -66,21 +68,30 @@ async def submit(team_id: ID, data: JoinInput, actor: CurrentUser, key: Key, ses
 
 
 @router.get("/teams/{team_id}/join-requests")
-async def pending(team_id: ID, actor: CurrentUser, session: Session):
+async def pending(
+    team_id: ID, actor: CurrentUser, session: Session,
+    after: ID | None = None, limit: Annotated[int, Query(ge=1, le=100)] = 100,
+):
     team = await session.get(Team, team_id)
     if team is None:
         raise HTTPException(404, "Team not found")
     require_leader(team, actor)
-    rows = await session.execute(
+    query = (
         select(JoinRequest, User.display_name)
         .join(User, User.id == JoinRequest.user_id)
         .where(JoinRequest.team_id == team_id, JoinRequest.status == "pending")
-        .order_by(JoinRequest.id).limit(100)
+        .order_by(JoinRequest.id).limit(limit + 1)
     )
-    return {"requests": [
-        {"id": row.id, "user_id": row.user_id, "message": row.message, "display_name": name}
-        for row, name in rows
-    ]}
+    if after is not None:
+        query = query.where(JoinRequest.id > after)
+    rows = (await session.execute(query)).all()
+    return {
+        "requests": [
+            {"id": row.id, "user_id": row.user_id, "message": row.message, "display_name": name}
+            for row, name in rows[:limit]
+        ],
+        "next_after": rows[limit - 1][0].id if len(rows) > limit else None,
+    }
 
 
 @router.post("/join-requests/{request_id}/accept")

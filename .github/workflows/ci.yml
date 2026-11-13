@@ -56,6 +56,71 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
+  browser:
+    name: Browser walkthrough
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: racesafe
+          POSTGRES_PASSWORD: racesafe_ci
+          POSTGRES_DB: racesafe_browser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U racesafe -d racesafe_browser"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://racesafe:racesafe_ci@127.0.0.1:5432/racesafe_browser
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: npm run build --prefix frontend
+      - run: python -m pip install -r requirements.txt playwright imageio-ffmpeg
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m alembic upgrade head
+      - name: Seed browser test data
+        run: SEED_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(16))')" python -m scripts.seed
+      - name: Verify keyboard and live updates and record the walkthrough
+        shell: bash
+        run: |
+          python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/racesafe.log" 2>&1 &
+          api_pid=$!
+          trap 'status=$?; kill "$api_pid" 2>/dev/null || true; if (( status != 0 )); then cat "$RUNNER_TEMP/racesafe.log"; fi' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8000/api/health; then
+              break
+            fi
+            kill -0 "$api_pid"
+            sleep 1
+          done
+          curl --silent --fail --max-time 2 http://127.0.0.1:8000/api/health
+          python -m scripts.browser_walkthrough
+      - uses: actions/upload-artifact@v7
+        with:
+          name: racesafe-walkthrough
+          path: walkthrough/racesafe-walkthrough.mp4
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-diagnostics
+          path: walkthrough/*.webm
+          if-no-files-found: ignore
+
   board-benchmark:
     name: Board benchmark (${{ matrix.seed_users }} seeded users)
     runs-on: ubuntu-latest

@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
 
-from backend.models import AuditEvent, InviteCode
+from backend.models import AuditEvent, InviteCode, JoinRequest
 from conftest import key
 
 pytestmark = pytest.mark.asyncio
@@ -23,6 +23,39 @@ async def test_create_requires_idempotency_key(race):
     (_, headers), = await race.users()
     response = await race.client.post("/api/hackathons/1/teams", headers=headers, json={"name": "My Team"})
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("field", ["name", "description", "needed_skills"])
+async def test_create_rejects_invalid_database_text(race, field):
+    (_, headers), = await race.users()
+    value = "Test\0value"
+    body = {"name": "My Team", field: [value] if field == "needed_skills" else value}
+    response = await race.client.post(
+        "/api/hackathons/1/teams", headers={**headers, **key()}, json=body,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][:2] == ["body", field]
+
+
+async def test_join_request_rejects_invalid_database_text(race):
+    (_, leader), (_, joiner) = await race.users(2)
+    team_id = await race.team(leader)
+    response = await race.client.post(
+        f"/api/teams/{team_id}/join-requests", headers={**joiner, **key()},
+        json={"message": "Hello\0there"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "message"]
+
+
+@pytest.mark.parametrize("endpoint", ["board", "people"])
+async def test_board_rejects_invalid_skill_filter(race, endpoint):
+    (_, headers), = await race.users()
+    response = await race.client.get(
+        f"/api/hackathons/1/{endpoint}", headers=headers, params={"skill": "Python\0"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "skill"]
 
 
 async def test_idempotency_key_cannot_change_payload(race):
@@ -84,6 +117,47 @@ async def test_invite_rate_limit(race):
     for _ in range(8):
         assert (await race.redeem("AAAAAAAAAAAA", headers)).status_code == 400
     assert (await race.redeem("AAAAAAAAAAAA", headers)).status_code == 429
+
+
+async def test_completed_invite_retry_replays_at_rate_limit(race):
+    (_, leader), (_, joiner) = await race.users(2)
+    team_id = await race.team(leader)
+    code = await race.invite(team_id, leader)
+    headers = {**joiner, **key()}
+    for _ in range(7):
+        assert (await race.redeem("AAAAAAAAAAAA", joiner)).status_code == 400
+
+    first = await race.client.post("/api/invites/redeem", headers=headers, json={"code": code})
+    assert first.status_code == 200
+    assert (await race.redeem(code, joiner)).status_code == 429
+    replay = await race.client.post("/api/invites/redeem", headers=headers, json={"code": code})
+    assert replay.status_code == 200
+    assert replay.json() == first.json() == {"team_id": team_id, "member_count": 2}
+    detail = await race.client.get(f"/api/teams/{team_id}", headers=leader)
+    assert len(detail.json()["members"]) == 2
+
+
+async def test_leader_can_page_past_first_hundred_join_requests(race):
+    (_, leader), = await race.users()
+    applicants = await race.users(101)
+    team_id = await race.team(leader)
+    async with race.app.state.sessions.begin() as session:
+        await session.execute(insert(JoinRequest), [
+            {"team_id": team_id, "user_id": user_id} for user_id, _ in applicants
+        ])
+
+    path = f"/api/teams/{team_id}/join-requests"
+    first = await race.client.get(path, headers=leader)
+    assert first.status_code == 200
+    assert len(first.json()["requests"]) == 100
+    cursor = first.json()["next_after"]
+    assert cursor == first.json()["requests"][-1]["id"]
+    second = await race.client.get(path, headers=leader, params={"after": cursor})
+    assert second.status_code == 200
+    assert [row["user_id"] for row in second.json()["requests"]] == [applicants[-1][0]]
+    assert second.json()["next_after"] is None
+    forbidden = await race.client.get(path, headers=applicants[-1][1], params={"after": cursor})
+    assert forbidden.status_code == 403
 
 
 async def test_join_request_leader_only_and_accept(race):

@@ -2,6 +2,8 @@
 
 RaceSafe helps hackathon participants find teammates, request to join, and redeem expiring invites. PostgreSQL enforces the capacity and membership rules even when multiple requests compete for one seat.
 
+[Live demo](https://racesafe.onrender.com) · [Design note](docs/DESIGN.md) · [Load-test report](docs/LOAD-TEST.md) · [Walkthrough](docs/WALKTHROUGH.md)
+
 ## Run locally on Windows
 
 Open PowerShell in the repository root. Start Docker Desktop first.
@@ -79,4 +81,4 @@ New signups receive a single-use link that expires after 30 minutes. They enter 
 
 - [Design note](docs/DESIGN.md)
 - [Board benchmark](docs/LOAD-TEST.md)
-- [Walkthrough outline](docs/WALKTHROUGH.md)
+- [Walkthrough recording and verification](docs/WALKTHROUGH.md)
