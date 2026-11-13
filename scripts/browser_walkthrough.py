@@ -69,7 +69,10 @@ def fits_viewport(page: Page) -> None:
 def verify_stale_filter(page: Page) -> None:
     delayed = re.compile(r"/api/hackathons/1/board\?limit=40$")
     held = []
-    page.route(delayed, held.append, times=1)
+    def hold(route):
+        held.append(route)
+
+    page.route(delayed, hold, times=1)
     with page.expect_request(delayed):
         activate(page, page.get_by_role("button", name="Load more"))
     enter(page, "Filter by skill", "python")
