@@ -11,8 +11,11 @@ export function useEvents(token: string, hackathonId: number | undefined, refres
     let debounce: number | undefined
 
     function notify() {
-      window.clearTimeout(debounce)
-      debounce = window.setTimeout(() => onChange(), 150)
+      if (debounce !== undefined) return
+      debounce = window.setTimeout(() => {
+        debounce = undefined
+        onChange()
+      }, 150)
     }
 
     async function connect() {

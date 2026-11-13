@@ -88,14 +88,14 @@ async def rotate(team_id: ID, request: Request, actor: CurrentUser, session: Ses
 
 @router.post("/invites/redeem")
 async def redeem(data: InviteInput, request: Request, actor: CurrentUser, key: Key, session: Session):
-    limiter = request.app.state.limiter
-    limiter.take("invite-ip", client_ip(request), limit=90, seconds=600)
-    limiter.take("invite-user", str(actor), limit=8, seconds=600)
+    async def attempt():
+        limiter = request.app.state.limiter
+        limiter.take("invite-ip", client_ip(request), limit=90, seconds=600)
+        limiter.take("invite-user", str(actor), limit=8, seconds=600)
+        return await invites.redeem(session, actor, data.code, request.app.state.secret)
+
     async with session.begin():
-        return await once(
-            session, actor, key, "invite.redeem", {"code": data.code},
-            lambda: invites.redeem(session, actor, data.code, request.app.state.secret),
-        )
+        return await once(session, actor, key, "invite.redeem", {"code": data.code}, attempt)
 
 
 async def change_membership(

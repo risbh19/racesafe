@@ -4,6 +4,7 @@ import type { Run } from './BoardPage'
 
 type Detail = Team & { members: Omit<Person, 'utc_offset_minutes'>[] }
 type Pending = { id: number; user_id: number; display_name: string; message: string }
+type Inbox = { requests: Pending[]; next_after: number | null }
 type Event = { id: number; actor_id: number; actor_name: string | null; action: string; created_at: string }
 type Suggestion = Person & {
   score: number; skill_score: number; timezone_score: number; matched_skills: string[]
@@ -13,12 +14,17 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
   api: Api; profile: Profile; teamId: number; revision: number; busy: boolean; run: Run; back: () => void
 }) {
   const [team, setTeam] = useState<Detail | null>(null)
-  const [pending, setPending] = useState<Pending[]>([])
+  const [inbox, setInbox] = useState<{ cursor: number | null; data: Inbox } | null>(null)
+  const [inboxError, setInboxError] = useState('')
+  const [inboxCursors, setInboxCursors] = useState<(number | null)[]>([null])
   const [events, setEvents] = useState<Event[]>([])
   const [ranking, setRanking] = useState<{ explanation: string; suggestions: Suggestion[] } | null>(null)
   const [invite, setInvite] = useState<{ code: string; expires_at: string } | null>(null)
   const [error, setError] = useState('')
   const path = '/teams/' + teamId
+  const leader = team?.leader_id === profile.id
+  const inboxCursor = inboxCursors.at(-1) ?? null
+  const currentInbox = inbox?.cursor === inboxCursor ? inbox.data : null
 
   useEffect(() => {
     let active = true
@@ -28,18 +34,10 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
         if (!active) return
         setTeam(current)
         setError('')
-        const [requests, audit] = await Promise.all([
-          current.leader_id === profile.id
-            ? api<{ requests: Pending[] }>(path + '/join-requests').catch(() => ({ requests: [] }))
-            : { requests: [] },
-          current.members.some((member) => member.id === profile.id)
-            ? api<{ events: Event[] }>(path + '/audit').catch(() => ({ events: [] }))
-            : { events: [] },
-        ])
-        if (active) {
-          setPending(requests.requests)
-          setEvents(audit.events)
-        }
+        const audit = current.members.some((member) => member.id === profile.id)
+          ? await api<{ events: Event[] }>(path + '/audit').catch(() => ({ events: [] }))
+          : { events: [] }
+        if (active) setEvents(audit.events)
       } catch (reason) {
         if (active) {
           setTeam(null)
@@ -51,6 +49,22 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
     return () => { active = false }
   }, [api, path, profile.id, revision])
 
+  useEffect(() => {
+    if (!leader) return
+    const controller = new AbortController()
+    const { signal } = controller
+    const params = new URLSearchParams({ limit: '20' })
+    if (inboxCursor !== null) params.set('after', String(inboxCursor))
+    void api<Inbox>(path + '/join-requests?' + params, { signal }).then((data) => {
+      if (signal.aborted) return
+      setInbox({ cursor: inboxCursor, data })
+      setInboxError('')
+    }).catch((reason: Error) => {
+      if (!signal.aborted) setInboxError(reason.message)
+    })
+    return () => controller.abort()
+  }, [api, inboxCursor, leader, path, revision])
+
   if (!team) return (
     <section className="panel">
       <button type="button" onClick={back}>Back to board</button>
@@ -58,7 +72,6 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
     </section>
   )
 
-  const leader = team.leader_id === profile.id
   const member = team.members.some((person) => person.id === profile.id)
   const waiting = profile.requests.some((request) => request.team_id === teamId && request.status === 'pending')
 
@@ -170,9 +183,11 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
       {leader && (
         <section className="panel">
           <h2>Join requests</h2>
-          {pending.length === 0 && <p className="muted">No pending requests.</p>}
+          {inboxError && <p role="alert" className="error">{inboxError}</p>}
+          {!currentInbox && !inboxError && <p role="status">Loading requests.</p>}
+          {currentInbox?.requests.length === 0 && <p className="muted">No pending requests on this page.</p>}
           <ul className="item-list">
-            {pending.map((request) => (
+            {currentInbox?.requests.map((request) => (
               <li key={request.id}>
                 <div><strong>{request.display_name}</strong>{request.message && <p>{request.message}</p>}</div>
                 <div className="row">
@@ -184,6 +199,19 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
               </li>
             ))}
           </ul>
+          {(inboxCursors.length > 1 || currentInbox?.next_after != null) && (
+            <nav className="row" aria-label="Join request pages">
+              <button type="button" disabled={busy || inboxCursors.length === 1} onClick={() => {
+                setInboxError('')
+                setInboxCursors(inboxCursors.slice(0, -1))
+              }}>Previous requests</button>
+              <button type="button" disabled={busy || currentInbox?.next_after == null} onClick={() => {
+                if (currentInbox?.next_after == null) return
+                setInboxError('')
+                setInboxCursors([...inboxCursors, currentInbox.next_after])
+              }}>Next requests</button>
+            </nav>
+          )}
         </section>
       )}
 

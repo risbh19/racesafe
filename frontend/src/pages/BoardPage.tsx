@@ -1,49 +1,84 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { skillList, utcLabel, type Api, type Person, type Profile, type Team } from '../api'
+import { loadBoardWindow, PAGE_SIZE } from '../boardPagination'
 
 type Board = { teams: Team[]; next_before: number | null }
 type People = { people: Person[]; next_after: number | null }
+
+type Tab = 'teams' | 'people'
+type Snapshot = { scope: string; count: number; next: number | null } & (
+  { tab: 'teams'; items: Team[] } | { tab: 'people'; items: Person[] }
+)
 
 export type Run = (action: () => Promise<void>, success?: string) => Promise<void>
 
 export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
   api: Api; profile: Profile; revision: number; busy: boolean; run: Run; openTeam: (id: number) => void
 }) {
-  const [tab, setTab] = useState<'teams' | 'people'>('teams')
+  const [tab, setTab] = useState<Tab>('teams')
   const [filter, setFilter] = useState('')
-  const [board, setBoard] = useState<Board | null>(null)
-  const [people, setPeople] = useState<People | null>(null)
-  const [error, setError] = useState('')
+  const [pageRequest, setPageRequest] = useState({ count: PAGE_SIZE })
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [failure, setFailure] = useState<{ scope: string; message: string } | null>(null)
   const base = '/hackathons/' + profile.hackathon_id
-  const query = new URLSearchParams({ limit: '20', ...(filter ? { skill: filter } : {}) }).toString()
+  const scope = JSON.stringify([base, tab, filter])
+  const current = snapshot?.scope === scope ? snapshot : null
+  const board = current?.tab === 'teams' ? current.items : null
+  const people = current?.tab === 'people' ? current.items : null
+  const error = failure?.scope === scope ? failure.message : ''
 
   useEffect(() => {
-    let active = true
+    const controller = new AbortController()
+    const { signal } = controller
+    const { count } = pageRequest
+
+    function query(limit: number, cursor: number | null, cursorName: string) {
+      const params = new URLSearchParams({ limit: String(limit) })
+      if (filter) params.set('skill', filter)
+      if (cursor !== null) params.set(cursorName, String(cursor))
+      return '?' + params
+    }
+
     async function load() {
       try {
         if (tab === 'teams') {
-          const result = await api<Board>(base + '/board?' + query)
-          if (active) setBoard(result)
+          const result = await loadBoardWindow(count, async (limit, cursor) => {
+            const page = await api<Board>(base + '/board' + query(limit, cursor, 'before'), { signal })
+            return { items: page.teams, next: page.next_before }
+          })
+          if (!signal.aborted) setSnapshot({ scope, count, tab, ...result })
         } else {
-          const result = await api<People>(base + '/people?' + query)
-          if (active) setPeople(result)
+          const result = await loadBoardWindow(count, async (limit, cursor) => {
+            const page = await api<People>(base + '/people' + query(limit, cursor, 'after'), { signal })
+            return { items: page.people, next: page.next_after }
+          })
+          if (!signal.aborted) setSnapshot({ scope, count, tab, ...result })
         }
-        if (active) setError('')
+        if (!signal.aborted) setFailure(null)
       } catch (reason) {
-        if (active) setError((reason as Error).message)
+        if (!signal.aborted) setFailure({ scope, message: (reason as Error).message })
       }
     }
     void load()
-    return () => { active = false }
-  }, [api, base, query, revision, tab])
+    return () => controller.abort()
+  }, [api, base, filter, pageRequest, revision, scope, tab])
+
+  function selectTab(next: Tab) {
+    if (next === tab) return
+    setSnapshot(null)
+    setFailure(null)
+    setTab(next)
+    setPageRequest({ count: PAGE_SIZE })
+  }
 
   function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const next = String(new FormData(event.currentTarget).get('skill') ?? '').trim()
     if (next !== filter) {
-      setBoard(null)
-      setPeople(null)
+      setSnapshot(null)
+      setFailure(null)
       setFilter(next)
+      setPageRequest({ count: PAGE_SIZE })
     }
   }
 
@@ -60,19 +95,6 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
       })
       openTeam(result.team_id)
     }, 'Team created.')
-  }
-
-  function more() {
-    void run(async () => {
-      if (tab === 'teams' && board?.next_before) {
-        const next = await api<Board>(base + '/board?' + query + '&before=' + board.next_before)
-        setBoard({ teams: [...board.teams, ...next.teams], next_before: next.next_before })
-      }
-      if (tab === 'people' && people?.next_after) {
-        const next = await api<People>(base + '/people?' + query + '&after=' + people.next_after)
-        setPeople({ people: [...people.people, ...next.people], next_after: next.next_after })
-      }
-    })
   }
 
   return (
@@ -95,8 +117,8 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
 
       <div className="board-tools">
         <div className="segmented" role="group" aria-label="Board view">
-          <button type="button" aria-pressed={tab === 'teams'} onClick={() => setTab('teams')}>Open teams</button>
-          <button type="button" aria-pressed={tab === 'people'} onClick={() => setTab('people')}>People</button>
+          <button type="button" aria-pressed={tab === 'teams'} onClick={() => selectTab('teams')}>Open teams</button>
+          <button type="button" aria-pressed={tab === 'people'} onClick={() => selectTab('people')}>People</button>
         </div>
         <form className="row filter" onSubmit={search}>
           <label htmlFor="skill-filter">Filter by skill</label>
@@ -107,7 +129,7 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
       {error && <p role="alert" className="error">{error}</p>}
       {tab === 'teams' && (
         <section aria-label="Open teams" className="cards">
-          {board?.teams.map((team) => (
+          {board?.map((team) => (
             <article key={team.id} className="panel team-card">
               <div className="team-card-info">
                 <h2>{team.name}</h2>
@@ -127,14 +149,14 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
             </article>
           ))}
           {!board && !error && <p className="panel empty-state" role="status">Loading teams…</p>}
-          {board?.teams.length === 0 && (
+          {board?.length === 0 && (
             <p className="panel empty-state" role="status">{filter ? 'No open teams match this skill.' : 'No teams have open seats yet.'}</p>
           )}
         </section>
       )}
       {tab === 'people' && (
         <section aria-label="Available teammates" className="cards">
-          {people?.people.map((person) => (
+          {people?.map((person) => (
             <article key={person.id} className="panel">
               <div className="person-heading">
                 <span className="avatar" aria-hidden="true">{person.display_name.slice(0, 1).toUpperCase()}</span>
@@ -144,13 +166,15 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
             </article>
           ))}
           {!people && !error && <p className="panel empty-state" role="status">Loading people…</p>}
-          {people?.people.length === 0 && (
+          {people?.length === 0 && (
             <p className="panel empty-state" role="status">{filter ? 'No participants match this skill.' : 'No participants are looking for a team yet.'}</p>
           )}
         </section>
       )}
-      {((tab === 'teams' && board?.next_before) || (tab === 'people' && people?.next_after)) &&
-        <button className="load-more" type="button" disabled={busy} onClick={more}>Load more</button>}
+      {current?.next != null &&
+        <button className="load-more" type="button"
+          disabled={busy || (!error && current.count < pageRequest.count)}
+          onClick={() => setPageRequest({ count: current.count + PAGE_SIZE })}>Load more</button>}
     </>
   )
 }
