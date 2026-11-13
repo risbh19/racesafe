@@ -1,12 +1,16 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import select
+from fastapi.responses import JSONResponse
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from backend.db import Session
-from backend.models import JoinRequest, Participant, Team, TeamMember, User
-from backend.schemas import Login, ProfileEdit, Register, normalized_skills
+from backend.models import JoinRequest, Participant, PendingRegistration, Team, TeamMember, User
+from backend.schemas import Login, ProfileEdit, Register, VerifyEmail, normalized_skills
 from backend.security import CurrentUser, client_ip, hash_password, issue_token, verify_password
+from backend.services import verification
 from backend.services.audit import changed
 from backend.services.teams import participant, team_summary
 
@@ -20,22 +24,94 @@ def public_profile(user: User) -> dict:
     }
 
 
-@router.post("/auth/register", status_code=201)
-async def register(data: Register, request: Request, session: Session):
-    request.app.state.limiter.take("register", client_ip(request), limit=20)
-    password_hash = await hash_password(data.password)
-    hackathon_id = request.app.state.settings.hackathon_id
-    async with session.begin():
-        user_id = await session.scalar(
-            insert(User).values(
-                email=data.email, password_hash=password_hash, display_name=data.display_name,
-                skills=normalized_skills(data.skills), utc_offset_minutes=data.utc_offset_minutes,
-            ).on_conflict_do_nothing(index_elements=["email"]).returning(User.id)
-        )
-        if user_id is None:
-            raise HTTPException(409, "An account with this email already exists")
+async def create_account(session: Session, hackathon_id: int, email: str, registration: dict):
+    user_id = await session.scalar(
+        insert(User).values(email=email, **registration)
+        .on_conflict_do_nothing(index_elements=["email"]).returning(User.id)
+    )
+    if user_id is not None:
         session.add(Participant(hackathon_id=hackathon_id, user_id=user_id))
         await changed(session, hackathon_id)
+    return user_id
+
+
+@router.post("/auth/register", status_code=201)
+async def register(data: Register, request: Request, session: Session):
+    state = request.app.state
+    settings = state.settings
+    state.limiter.take("register", client_ip(request), limit=20)
+    if settings.require_email_verification:
+        state.limiter.take("register-email", data.email, limit=3, seconds=900)
+
+    async with state.login_slots:
+        registration = {
+            "password_hash": await hash_password(data.password),
+            "display_name": data.display_name,
+            "skills": normalized_skills(data.skills),
+            "utc_offset_minutes": data.utc_offset_minutes,
+        }
+        if not settings.require_email_verification:
+            async with session.begin():
+                user_id = await create_account(session, settings.hackathon_id, data.email, registration)
+            if user_id is None:
+                raise HTTPException(409, "An account with this email already exists")
+            return {"access_token": issue_token(request, user_id), "token_type": "bearer"}
+
+        token = verification.new_token()
+        token_hash = verification.digest_token(token)
+        async with session.begin():
+            exists = await session.scalar(select(User.id).where(User.email == data.email))
+            if exists is None:
+                await session.execute(delete(PendingRegistration).where(
+                    PendingRegistration.expires_at <= func.clock_timestamp(),
+                ))
+                await session.execute(insert(PendingRegistration).values(
+                    email=data.email, token_hash=token_hash,
+                    expires_at=datetime.now(timezone.utc) + verification.TOKEN_LIFETIME,
+                    registration=registration,
+                ))
+
+    if exists is None:
+        try:
+            await verification.send_verification(settings, data.email, token)
+        except verification.VerificationDeliveryError:
+            async with session.begin():
+                await session.execute(delete(PendingRegistration).where(
+                    PendingRegistration.token_hash == token_hash,
+                ))
+            raise HTTPException(503, "Verification email could not be sent. Please try again.") from None
+    return JSONResponse({"verification_required": True}, status_code=202)
+
+
+@router.post("/auth/verify-email")
+async def verify_email(data: VerifyEmail, request: Request, session: Session):
+    state = request.app.state
+    if not state.settings.require_email_verification:
+        raise HTTPException(404, "Email verification is unavailable")
+    state.limiter.take("verify-email-ip", client_ip(request), limit=40)
+    token_hash = verification.digest_token(data.token)
+    state.limiter.take("verify-email-token", token_hash, limit=10)
+    invalid = "This link or signup password is invalid. Request a new link if it expired."
+    active_link = (
+        PendingRegistration.token_hash == token_hash,
+        PendingRegistration.expires_at > func.clock_timestamp(),
+    )
+    async with state.login_slots:
+        async with session.begin():
+            registration = await session.scalar(select(PendingRegistration.registration).where(*active_link))
+        digest = registration["password_hash"] if registration else state.dummy_password_hash
+        if not await verify_password(data.password, digest) or registration is None:
+            raise HTTPException(400, invalid)
+
+        async with session.begin():
+            email = await session.scalar(
+                delete(PendingRegistration).where(*active_link).returning(PendingRegistration.email)
+            )
+            if email is None:
+                raise HTTPException(400, invalid)
+            user_id = await create_account(session, state.settings.hackathon_id, email, registration)
+        if user_id is None:
+            raise HTTPException(400, invalid)
     return {"access_token": issue_token(request, user_id), "token_type": "bearer"}
 
 

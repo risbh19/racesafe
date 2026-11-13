@@ -35,6 +35,11 @@ class Register(Login):
         return value.strip() if isinstance(value, str) else value
 
 
+class VerifyEmail(Input):
+    token: str = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
+    password: str = Field(min_length=10, max_length=128)
+
+
 class ProfileEdit(Input):
     display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=60)]
     skills: Skills
