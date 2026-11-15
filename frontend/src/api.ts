@@ -10,6 +10,7 @@ export type Team = {
   needed_skills: string[]
   looking: boolean
   locked: boolean
+  is_draft: boolean
 }
 
 export type Person = {
@@ -24,7 +25,6 @@ export type Profile = Person & {
   hackathon_id: number
   looking: boolean
   team: Team | null
-  requests: { id: number; team_id: number; team_name: string; status: string }[]
 }
 
 export class ApiError extends Error {

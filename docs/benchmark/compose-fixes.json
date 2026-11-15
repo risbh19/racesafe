@@ -1,0 +1,15 @@
+{
+  "base_url": "http://127.0.0.1:18085",
+  "vus": 100,
+  "duration": "60s",
+  "pace_seconds": 0,
+  "authenticated_accounts": 100,
+  "seeded_users": 10000,
+  "commit": null,
+  "successful_board_requests": 64028,
+  "median_ms": 22.84975,
+  "p95_ms": 159.2798749999995,
+  "p99_ms": 2238.374045999994,
+  "error_rate": 0,
+  "board_requests_per_second": 1065.932716465034
+}

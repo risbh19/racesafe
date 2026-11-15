@@ -1,5 +1,9 @@
 # RaceSafe board load test
 
+## Updated full-stack Compose build
+
+The local Compose stack used PostgreSQL 16, 10,000 seeded users, and 2,000 teams. k6 used 100 distinct authenticated virtual users continuously for 60 seconds against the first board page. It recorded **159.28 ms p95**, **64,028 successful requests**, and **zero HTTP errors**. The p99 was 2,238.37 ms. [Raw JSON report](benchmark/compose-fixes.json)
+
 ## GitHub Actions
 
 The [fix-branch validation run](https://github.com/risbh19/racesafe/actions/runs/43473115252) used one API process and PostgreSQL 16. Each 60-second run used 100 distinct authenticated virtual users with no pause between requests and fetched 20 teams from the first board page.

@@ -14,21 +14,28 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.config import Settings, get_settings
 from backend.db import make_engine
+from backend.metrics import Metrics, RequestMetrics, scrape
 from backend.routers import auth, board, events, join_requests, teams
-from backend.security import RateLimiter, hash_password
+from backend.security import hash_password
 from backend.services.board_cache import BoardCache
+from backend.services.limits import RateLimiter
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.dummy_password_hash = await hash_password(secrets.token_hex(16))
     listener = asyncio.create_task(app.state.events.listen())
+    pruning = asyncio.create_task(app.state.limiter.prune())
     try:
         yield
     finally:
         listener.cancel()
+        pruning.cancel()
         with suppress(asyncio.CancelledError):
             await listener
+        with suppress(asyncio.CancelledError):
+            await pruning
+        await app.state.limiter.engine.dispose()
         await app.state.engine.dispose()
 
 
@@ -48,10 +55,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = make_engine(settings)
     app.state.sessions = async_sessionmaker(app.state.engine, expire_on_commit=False)
     app.state.secret = settings.jwt_secret.get_secret_value() if settings.jwt_secret else secrets.token_hex(32)
-    app.state.limiter = RateLimiter()
+    # Invite retries can already hold an application connection when they reach the throttle.
+    app.state.limiter = RateLimiter(make_engine(settings, pool_size=2), app.state.secret)
     app.state.login_slots = asyncio.Semaphore(min(settings.login_concurrency, settings.database_pool_size - 1))
     app.state.board_cache = BoardCache()
     app.state.events = events.Events(settings.listener_dsn(), app.state.board_cache.invalidate)
+    app.state.metrics = Metrics()
+    app.add_middleware(RequestMetrics, metrics=app.state.metrics)
+    app.add_api_route("/metrics", scrape, methods=["GET"], include_in_schema=False)
     app.add_api_route("/api/health", health, methods=["GET"])
     for router in (auth.router, teams.router, join_requests.router, board.router, events.router):
         app.include_router(router)

@@ -20,12 +20,14 @@ async def rotate_invite(session: AsyncSession, team_id: int, actor: int, secret:
     )
     code = new_invite()
     expires_at = now + timedelta(hours=24)
+    team.invite_version += 1
     session.add(InviteCode(
         code_hash=invite_hash(secret, code), team_id=team_id, created_by=actor, expires_at=expires_at,
     ))
-    record(session, team.hackathon_id, team_id, actor, "invite.rotated")
+    record(session, team.hackathon_id, team_id, actor, "invite.rotated",
+           expires_at=expires_at.isoformat(), version=team.invite_version)
     await changed(session, team.hackathon_id)
-    return {"code": code, "expires_at": expires_at}
+    return {"code": code, "expires_at": expires_at, "version": team.invite_version}
 
 
 async def redeem(session: AsyncSession, user_id: int, code: str, secret: str) -> dict:

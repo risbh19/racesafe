@@ -1,20 +1,22 @@
 from datetime import datetime, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from backend.db import Session
-from backend.models import JoinRequest, Participant, PendingRegistration, Team, TeamMember, User
-from backend.schemas import Login, ProfileEdit, Register, VerifyEmail, normalized_skills
+from backend.models import AuditEvent, JoinRequest, Participant, PendingRegistration, Team, TeamMember, User
+from backend.schemas import ID, Login, ProfileEdit, Register, VerifyEmail, normalized_skills
 from backend.security import CurrentUser, client_ip, hash_password, issue_token, verify_password
 from backend.services import verification
 from backend.services.audit import changed
 from backend.services.teams import participant, team_summary
 
 router = APIRouter(prefix="/api")
+PageSize = Annotated[int, Query(ge=1, le=100)]
 
 
 def public_profile(user: User) -> dict:
@@ -39,9 +41,9 @@ async def create_account(session: Session, hackathon_id: int, email: str, regist
 async def register(data: Register, request: Request, session: Session):
     state = request.app.state
     settings = state.settings
-    state.limiter.take("register", client_ip(request), limit=20)
+    await state.limiter.take("register", client_ip(request), limit=20)
     if settings.require_email_verification:
-        state.limiter.take("register-email", data.email, limit=3, seconds=900)
+        await state.limiter.take("register-email", data.email, limit=3, seconds=900)
 
     async with state.login_slots:
         registration = {
@@ -88,9 +90,9 @@ async def verify_email(data: VerifyEmail, request: Request, session: Session):
     state = request.app.state
     if not state.settings.require_email_verification:
         raise HTTPException(404, "Email verification is unavailable")
-    state.limiter.take("verify-email-ip", client_ip(request), limit=40)
+    await state.limiter.take("verify-email-ip", client_ip(request), limit=40)
     token_hash = verification.digest_token(data.token)
-    state.limiter.take("verify-email-token", token_hash, limit=10)
+    await state.limiter.take("verify-email-token", token_hash, limit=10)
     invalid = "This link or signup password is invalid. Request a new link if it expired."
     active_link = (
         PendingRegistration.token_hash == token_hash,
@@ -118,8 +120,8 @@ async def verify_email(data: VerifyEmail, request: Request, session: Session):
 @router.post("/auth/login")
 async def login(data: Login, request: Request, session: Session):
     limiter = request.app.state.limiter
-    limiter.take("login-ip", client_ip(request), limit=40)
-    limiter.take("login-email", data.email, limit=10)
+    await limiter.take("login-ip", client_ip(request), limit=40)
+    await limiter.take("login-email", data.email, limit=10)
     async with request.app.state.login_slots:
         try:
             # Return the connection before running the expensive password check.
@@ -141,6 +143,58 @@ async def login(data: Login, request: Request, session: Session):
         return {"access_token": issue_token(request, user_id), "token_type": "bearer"}
 
 
+async def applicant_requests(
+    session: Session, actor: int, hackathon_id: int, before: int | None, limit: int,
+):
+    query = (
+        select(JoinRequest.id, JoinRequest.team_id, Team.name.label("team_name"), JoinRequest.status)
+        .join(Team, Team.id == JoinRequest.team_id)
+        .where(JoinRequest.user_id == actor, Team.hackathon_id == hackathon_id)
+        .order_by(JoinRequest.id.desc()).limit(limit + 1)
+    )
+    if before is not None:
+        query = query.where(JoinRequest.id < before)
+    rows = (await session.execute(query)).mappings().all()
+    return {
+        "requests": [dict(row) for row in rows[:limit]],
+        "next_before": rows[limit - 1]["id"] if len(rows) > limit else None,
+    }
+
+
+@router.get("/me/join-requests")
+async def my_requests(
+    request: Request, actor: CurrentUser, session: Session, before: ID | None = None,
+    limit: PageSize = 20,
+):
+    hackathon_id = request.app.state.settings.hackathon_id
+    await participant(session, hackathon_id, actor)
+    return await applicant_requests(session, actor, hackathon_id, before, limit)
+
+
+@router.get("/me/archived-teams")
+async def archived_teams(
+    request: Request, actor: CurrentUser, session: Session, before: ID | None = None,
+    limit: PageSize = 20,
+):
+    hackathon_id = request.app.state.settings.hackathon_id
+    await participant(session, hackathon_id, actor)
+    query = select(AuditEvent).where(
+        AuditEvent.actor_id == actor, AuditEvent.hackathon_id == hackathon_id,
+        AuditEvent.action == "team.deleted",
+    ).order_by(AuditEvent.id.desc()).limit(limit + 1)
+    if before is not None:
+        query = query.where(AuditEvent.id < before)
+    rows = (await session.scalars(query)).all()
+    return {
+        "teams": [
+            {"id": row.team_id, "name": row.details.get("name", f"Team #{row.team_id}"),
+             "deleted_at": row.created_at}
+            for row in rows[:limit]
+        ],
+        "next_before": rows[limit - 1].id if len(rows) > limit else None,
+    }
+
+
 @router.get("/me")
 async def me(request: Request, actor: CurrentUser, session: Session):
     hackathon_id = request.app.state.settings.hackathon_id
@@ -150,19 +204,11 @@ async def me(request: Request, actor: CurrentUser, session: Session):
         select(Team).join(TeamMember, TeamMember.team_id == Team.id)
         .where(TeamMember.hackathon_id == hackathon_id, TeamMember.user_id == actor)
     )
-    requests = await session.execute(
-        select(JoinRequest.id, JoinRequest.team_id, Team.name, JoinRequest.status)
-        .join(Team, Team.id == JoinRequest.team_id)
-        .where(JoinRequest.user_id == actor, Team.hackathon_id == hackathon_id)
-        .order_by(JoinRequest.id.desc()).limit(20)
-    )
+    requests = await applicant_requests(session, actor, hackathon_id, None, 20)
     return {
         **public_profile(user), "email": user.email, "looking": enrolled.looking,
         "hackathon_id": hackathon_id, "team": team_summary(team) if team else None,
-        "requests": [
-            {"id": rid, "team_id": team_id, "team_name": name, "status": status}
-            for rid, team_id, name, status in requests
-        ],
+        "requests": requests["requests"],
     }
 
 

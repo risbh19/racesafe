@@ -1,8 +1,10 @@
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import func, select
 
 from backend.db import Session
-from backend.models import AuditEvent, Team, TeamMember, User
+from backend.models import AuditEvent, JoinRequest, Team, TeamMember, User
 from backend.schemas import ID, InviteInput, TeamInput, normalized_skills
 from backend.security import CurrentUser, client_ip
 from backend.services import invites
@@ -26,9 +28,13 @@ async def create(hackathon_id: ID, data: TeamInput, actor: CurrentUser, key: Key
 
 @router.get("/teams/{team_id}")
 async def detail(team_id: ID, actor: CurrentUser, session: Session):
+    pending_request = select(JoinRequest.id).where(
+        JoinRequest.team_id == team_id, JoinRequest.user_id == actor, JoinRequest.status == "pending",
+    ).scalar_subquery()
     rows = (
         await session.execute(
-            select(Team, TeamMember, User)
+            select(Team, User, pending_request)
+            .select_from(Team)
             .join(TeamMember, TeamMember.team_id == Team.id)
             .join(User, User.id == TeamMember.user_id)
             .where(Team.id == team_id).order_by(TeamMember.joined_at, TeamMember.user_id)
@@ -40,9 +46,11 @@ async def detail(team_id: ID, actor: CurrentUser, session: Session):
     await participant(session, team.hackathon_id, actor)
     return {
         **team_summary(team),
+        "invite_version": team.invite_version if team.leader_id == actor else None,
+        "my_pending_request_id": rows[0][2],
         "members": [
             {"id": user.id, "display_name": user.display_name, "skills": user.skills}
-            for _, _, user in rows
+            for _, user, _ in rows
         ],
     }
 
@@ -52,12 +60,17 @@ async def edit(team_id: ID, data: TeamInput, actor: CurrentUser, session: Sessio
     async with session.begin():
         team = await locked_team(session, team_id)
         require_leader(team, actor)
-        team.name = data.name
-        team.description = data.description
-        team.looking = data.looking
-        team.needed_skills = normalized_skills(data.needed_skills)
-        record(session, team.hackathon_id, team_id, actor, "team.updated")
-        await changed(session, team.hackathon_id)
+        fields = data.model_dump()
+        fields["needed_skills"] = normalized_skills(data.needed_skills)
+        changes = {}
+        for field, value in fields.items():
+            previous = getattr(team, field)
+            if previous != value:
+                changes[field] = {"before": previous, "after": value}
+                setattr(team, field, value)
+        if changes:
+            record(session, team.hackathon_id, team_id, actor, "team.updated", changes=changes)
+            await changed(session, team.hackathon_id)
     return team_summary(team)
 
 
@@ -90,8 +103,8 @@ async def rotate(team_id: ID, request: Request, actor: CurrentUser, session: Ses
 async def redeem(data: InviteInput, request: Request, actor: CurrentUser, key: Key, session: Session):
     async def attempt():
         limiter = request.app.state.limiter
-        limiter.take("invite-ip", client_ip(request), limit=90, seconds=600)
-        limiter.take("invite-user", str(actor), limit=8, seconds=600)
+        await limiter.take("invite-ip", client_ip(request), limit=500, seconds=600)
+        await limiter.take("invite-user", str(actor), limit=8, seconds=600)
         return await invites.redeem(session, actor, data.code, request.app.state.secret)
 
     async with session.begin():
@@ -125,20 +138,35 @@ async def remove(team_id: ID, user_id: ID, actor: CurrentUser, session: Session)
 
 
 @router.get("/teams/{team_id}/audit")
-async def audit(team_id: ID, actor: CurrentUser, session: Session):
+async def audit(
+    team_id: ID, actor: CurrentUser, session: Session, before: ID | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+):
     member = await session.get(TeamMember, (team_id, actor))
-    if member is None:
-        raise HTTPException(403, "Only members can see team activity")
-    rows = await session.execute(
+    if member is not None:
+        hackathon_id = member.hackathon_id
+    else:
+        # The last member, who deletes the team by leaving, retains access to its history.
+        hackathon_id = await session.scalar(select(AuditEvent.hackathon_id).where(
+            AuditEvent.team_id == team_id, AuditEvent.actor_id == actor,
+            AuditEvent.action == "team.deleted",
+        ))
+        if hackathon_id is None:
+            raise HTTPException(403, "Only current members or the member who deleted the team can see activity")
+    query = (
         select(AuditEvent, User.display_name)
         .outerjoin(User, User.id == AuditEvent.actor_id)
-        .where(
-            AuditEvent.hackathon_id == member.hackathon_id, AuditEvent.team_id == team_id,
-        )
-        .order_by(AuditEvent.id.desc()).limit(100)
+        .where(AuditEvent.hackathon_id == hackathon_id, AuditEvent.team_id == team_id)
+        .order_by(AuditEvent.id.desc()).limit(limit + 1)
     )
-    return {"events": [
-        {"id": row.id, "actor_id": row.actor_id, "actor_name": actor_name, "action": row.action,
-         "details": row.details, "created_at": row.created_at}
-        for row, actor_name in rows
-    ]}
+    if before is not None:
+        query = query.where(AuditEvent.id < before)
+    rows = (await session.execute(query)).all()
+    return {
+        "events": [
+            {"id": row.id, "actor_id": row.actor_id, "actor_name": actor_name, "action": row.action,
+             "details": row.details, "created_at": row.created_at}
+            for row, actor_name in rows[:limit]
+        ],
+        "next_before": rows[limit - 1][0].id if len(rows) > limit else None,
+    }

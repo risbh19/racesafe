@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey,
+    BigInteger, Boolean, CheckConstraint, Computed, DateTime, ForeignKey,
     ForeignKeyConstraint, Identity, Index, Integer, String,
     UniqueConstraint, func, text,
 )
@@ -92,6 +92,8 @@ class Team(Base):
     min_size = mapped_column(Integer, nullable=False)
     max_size = mapped_column(Integer, nullable=False)
     member_count = mapped_column(Integer, nullable=False, server_default=text("1"))
+    is_draft = mapped_column(Boolean, Computed("member_count < min_size", persisted=True), nullable=False)
+    invite_version = mapped_column(Integer, nullable=False, server_default=text("0"))
     looking = mapped_column(Boolean, nullable=False, server_default=text("true"))
     locked_at = mapped_column(DateTime(timezone=True))
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -167,7 +169,11 @@ class IdempotencyKey(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_log"
-    __table_args__ = (Index("ix_audit_team", "hackathon_id", "team_id", "id"),)
+    __table_args__ = (
+        Index("ix_audit_team", "hackathon_id", "team_id", "id"),
+        Index("ix_audit_archived_teams", "actor_id", "id",
+              postgresql_where=text("action = 'team.deleted'")),
+    )
 
     id = mapped_column(BigInteger, Identity(), primary_key=True)
     hackathon_id = mapped_column(BigInteger, nullable=False)
@@ -176,3 +182,11 @@ class AuditEvent(Base):
     action = mapped_column(String(40), nullable=False)
     details = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RateLimit(Base):
+    __tablename__ = "rate_limits"
+
+    bucket = mapped_column(String(64), primary_key=True)
+    attempts = mapped_column(Integer, nullable=False)
+    expires_at = mapped_column(DateTime(timezone=True), nullable=False, index=True)

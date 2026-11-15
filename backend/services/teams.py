@@ -79,9 +79,10 @@ async def create_team(
     session.add(TeamMember(team_id=team.id, hackathon_id=hackathon_id, user_id=actor))
     enrolled.looking = False
     await cancel_other_requests(session, hackathon_id, actor, actor)
-    record(session, hackathon_id, team.id, actor, "team.created")
+    record(session, hackathon_id, team.id, actor, "team.created",
+           name=team.name, draft=team.is_draft)
     await changed(session, hackathon_id)
-    return {"team_id": team.id, "member_count": 1}
+    return {"team_id": team.id, "member_count": 1, "is_draft": team.is_draft}
 
 
 async def claim_seat(
@@ -90,6 +91,7 @@ async def claim_seat(
 ) -> dict:
     user_id = enrolled.user_id
     await ensure_teamless(session, team.hackathon_id, user_id)
+    was_draft = team.is_draft
     member_count = await session.scalar(
         update(Team)
         .where(Team.id == team.id, Team.member_count < Team.max_size, Team.locked_at.is_(None))
@@ -110,6 +112,8 @@ async def claim_seat(
         session, team.hackathon_id, user_id, actor, request.id if request else None,
     )
     record(session, team.hackathon_id, team.id, actor, "member.joined", user_id=user_id)
+    if was_draft and member_count >= team.min_size:
+        record(session, team.hackathon_id, team.id, actor, "team.formed")
     await changed(session, team.hackathon_id)
     return {"team_id": team.id, "member_count": member_count}
 
@@ -126,7 +130,13 @@ async def remove_member(
     record(session, team.hackathon_id, team.id, actor, action, user_id=user_id)
 
     if team.member_count == 1:
-        record(session, team.hackathon_id, team.id, actor, "team.deleted")
+        pending_ids = await session.scalars(select(JoinRequest.id).where(
+            JoinRequest.team_id == team.id, JoinRequest.status == "pending",
+        ))
+        for request_id in pending_ids:
+            record(session, team.hackathon_id, team.id, actor, "request.cancelled",
+                   request_id=request_id, reason="team_deleted")
+        record(session, team.hackathon_id, team.id, actor, "team.deleted", name=team.name)
         await session.delete(team)
         await changed(session, team.hackathon_id)
         return {"deleted": True, "leader_id": None}
@@ -134,6 +144,8 @@ async def remove_member(
     await session.delete(member)
     await session.flush()
     team.member_count -= 1
+    if team.member_count == team.min_size - 1:
+        record(session, team.hackathon_id, team.id, actor, "team.returned_to_draft")
     if team.member_count < team.min_size and team.locked_at is not None:
         team.locked_at = None
         record(session, team.hackathon_id, team.id, actor, "team.reopened")
@@ -155,5 +167,5 @@ def team_summary(team: Team) -> dict:
         "hackathon_id": team.hackathon_id, "leader_id": team.leader_id,
         "min_size": team.min_size, "max_size": team.max_size, "member_count": team.member_count,
         "needed_skills": team.needed_skills, "looking": team.looking,
-        "locked": team.locked_at is not None,
+        "locked": team.locked_at is not None, "is_draft": team.member_count < team.min_size,
     }

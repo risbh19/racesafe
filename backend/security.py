@@ -2,9 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import secrets
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from time import monotonic
 from typing import Annotated
 
 import jwt
@@ -71,29 +69,6 @@ def new_invite() -> str:
 
 def invite_hash(secret: str, code: str) -> str:
     return hmac.new(secret.encode(), code.encode(), hashlib.sha256).hexdigest()
-
-
-class RateLimiter:
-    """Bounded fixed windows for the single API process."""
-
-    def __init__(self, max_keys: int = 50_000):
-        self.buckets: OrderedDict[tuple[str, str], tuple[float, int]] = OrderedDict()
-        self.max_keys = max_keys
-
-    def take(self, scope: str, key: str, *, limit: int, seconds: int = 60) -> None:
-        now = monotonic()
-        bucket = (scope, key)
-        ends, count = self.buckets.get(bucket, (now + seconds, 0))
-        if ends <= now:
-            ends, count = now + seconds, 0
-        if count >= limit:
-            raise HTTPException(429, "Too many attempts. Try again shortly.", {
-                "Retry-After": str(max(1, int(ends - now) + 1)),
-            })
-        self.buckets[bucket] = (ends, count + 1)
-        self.buckets.move_to_end(bucket)
-        if len(self.buckets) > self.max_keys:
-            self.buckets.popitem(last=False)
 
 
 def client_ip(request: Request) -> str:

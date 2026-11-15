@@ -1,5 +1,6 @@
 from typing import Annotated
 
+from email_validator import EmailNotValidError, validate_email
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 def validate_database_text(value: str) -> str:
@@ -12,9 +13,19 @@ def validate_database_text(value: str) -> str:
     return value
 
 
+def normalize_skill(value: str) -> str:
+    normalized = value.lower()
+    if len(normalized) > 30:
+        raise ValueError("Skills must be at most 30 characters after normalization")
+    return normalized
+
+
 DatabaseText = Annotated[str, AfterValidator(validate_database_text)]
 ID = Annotated[int, Field(ge=1, le=9223372036854775807)]
-Skill = Annotated[DatabaseText, StringConstraints(strip_whitespace=True, min_length=1, max_length=30)]
+Skill = Annotated[
+    DatabaseText, StringConstraints(strip_whitespace=True, min_length=1, max_length=30),
+    AfterValidator(normalize_skill),
+]
 Skills = Annotated[list[Skill], Field(max_length=10)]
 TimeOffset = Annotated[int, Field(ge=-720, le=840)]
 TeamName = Annotated[DatabaseText, StringConstraints(strip_whitespace=True, min_length=3, max_length=40)]
@@ -39,6 +50,16 @@ class Register(Login):
     display_name: DatabaseText = Field(min_length=2, max_length=60)
     skills: Skills = Field(default_factory=list)
     utc_offset_minutes: TimeOffset = 0
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, value: str) -> str:
+        try:
+            # Synthetic .test addresses are used by local runs and CI.
+            validate_email(value, check_deliverability=False, test_environment=True)
+        except EmailNotValidError as exc:
+            raise ValueError("Enter a valid email address") from exc
+        return value
 
     @field_validator("display_name", mode="before")
     @classmethod

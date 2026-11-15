@@ -133,6 +133,7 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
             <article key={team.id} className="panel team-card">
               <div className="team-card-info">
                 <h2>{team.name}</h2>
+                {team.is_draft && <p className="muted">Draft · recruiting to form a team</p>}
                 {team.description && <p className="muted">{team.description}</p>}
                 {team.needed_skills.length > 0 && <div className="tags">{team.needed_skills.map((skill) => <span key={skill}>{skill}</span>)}</div>}
               </div>

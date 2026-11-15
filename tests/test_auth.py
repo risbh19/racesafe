@@ -122,6 +122,13 @@ async def test_bad_registration_does_not_echo_password(race):
     assert "bad123" not in response.text
 
 
+@pytest.mark.parametrize("email", ["builder@example..test", "builder@-example.test", "builder..two@example.test"])
+async def test_signup_rejects_malformed_email(race, email):
+    response = await race.client.post("/api/auth/register", json={**ACCOUNT, "email": email})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "email"]
+
+
 async def test_authentication_required(race):
     assert (await race.client.get("/api/me")).status_code == 401
 

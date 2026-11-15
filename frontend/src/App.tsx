@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ApiError, makeApi, skillList, utcLabel, type Profile } from './api'
+import { ArchivedTeams, MyRequests } from './components/Activity'
 import { JoinDialog } from './components/JoinDialog'
 import { useEvents } from './hooks/useEvents'
 import { AuthPage } from './pages/AuthPage'
@@ -125,19 +126,8 @@ export default function App() {
               ? <BoardPage api={api} profile={profile} revision={revision} busy={busy} run={run} openTeam={setTeamId} />
               : <TeamPage key={teamId} api={api} profile={profile} teamId={teamId} revision={revision} busy={busy} run={run} back={() => setTeamId(null)} />}
 
-            {profile.requests.length > 0 && <details className="panel">
-              <summary>My join requests</summary>
-              <ul className="item-list">
-                {profile.requests.map((request) => (
-                  <li key={request.id}>
-                    <span><strong>{request.team_name}</strong> · {request.status}</span>
-                    {request.status === 'pending' && <button type="button" disabled={busy} onClick={() => void run(async () => {
-                      await api('/join-requests/' + request.id, { method: 'DELETE' })
-                    }, 'Join request cancelled.')}>Cancel</button>}
-                  </li>
-                ))}
-              </ul>
-            </details>}
+            <MyRequests api={api} revision={revision} run={run} busy={busy} />
+            <ArchivedTeams api={api} revision={revision} />
 
             <details className="panel">
               <summary>My profile</summary>

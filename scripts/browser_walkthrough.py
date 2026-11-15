@@ -1,15 +1,18 @@
 """Verify the keyboard and live-update flows and record an isolated RaceSafe demo."""
 
+import os
 import re
 import subprocess
+from contextlib import closing
 from pathlib import Path
 
 from imageio_ffmpeg import get_ffmpeg_exe
 from playwright.sync_api import Locator, Page, expect, sync_playwright
 
-ORIGIN = "http://127.0.0.1:8000"
-OUTPUT = Path("walkthrough")
+ORIGIN = os.environ.get("WALKTHROUGH_ORIGIN", "http://127.0.0.1:8000")
+OUTPUT = Path(os.environ.get("WALKTHROUGH_OUTPUT", "walkthrough"))
 TEAM = "Walkthrough team"
+RANKING_SKILL = "hardware sketching"
 
 
 def focus(page: Page, target: Locator) -> None:
@@ -36,14 +39,25 @@ def enter(page: Page, field: str, value: str) -> None:
     expect(page.get_by_label(field, exact=True)).to_have_value(value)
 
 
-def register(page: Page, role: str) -> None:
+def register(page: Page, role: str, skill: str | None = None) -> None:
     page.goto(ORIGIN, wait_until="domcontentloaded")
     activate(page, page.get_by_role("button", name="Create a RaceSafe account"))
     enter(page, "Display name", f"Demo {role}")
     enter(page, "Email", f"walkthrough-{role.lower()}@example.test")
     enter(page, "Password", "Walkthrough-demo-2026")
+    if skill:
+        enter(page, "Skills (separate with commas)", skill)
     activate(page, page.get_by_role("button", name="Create account", exact=True))
     expect(page.get_by_text("Live updates on")).to_be_visible()
+
+
+def sign_in_as_leader(page: Page) -> None:
+    page.goto(ORIGIN, wait_until="domcontentloaded")
+    enter(page, "Email", "walkthrough-leader@example.test")
+    enter(page, "Password", "Walkthrough-demo-2026")
+    activate(page, page.get_by_role("button", name="Sign in", exact=True))
+    expect(page.get_by_text("Live updates on")).to_be_visible()
+    activate(page, page.get_by_role("button", name="My team", exact=True))
 
 
 def caption(page: Page, message: str) -> None:
@@ -94,8 +108,26 @@ def verify_stale_filter(page: Page) -> None:
     expect(cards.first.get_by_role("heading", name=re.compile("^Benchmark team "))).to_be_visible()
 
 
+def verify_approval_rollback(leader: Page) -> None:
+    accept_path = re.compile(r"/api/join-requests/\d+/accept$")
+    held = []
+
+    def hold(route):
+        held.append(route)
+
+    leader.route(accept_path, hold, times=1)
+    accept = leader.get_by_role("button", name="Accept Demo Applicant")
+    with leader.expect_request(accept_path):
+        activate(leader, accept)
+    expect(accept).to_have_count(0)
+    assert len(held) == 1
+    held[0].fulfill(status=409, json={"detail": "Approval conflicted. Try again."})
+    expect(leader.get_by_role("alert")).to_contain_text("Approval conflicted")
+    expect(accept).to_be_visible()
+
+
 def main() -> None:
-    OUTPUT.mkdir(exist_ok=True)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         desktop = {"width": 900, "height": 800}
@@ -127,8 +159,10 @@ def main() -> None:
             activate(leader, leader.locator("summary").filter(has_text=re.compile("^Create a team$")))
             enter(leader, "Team name", TEAM)
             enter(leader, "Description", "Looking for Python and design teammates.")
+            enter(leader, "Skills you need (separate with commas)", RANKING_SKILL)
             activate(leader, leader.get_by_role("button", name="Create team", exact=True))
             expect(leader.get_by_role("heading", name=TEAM)).to_be_visible()
+            expect(leader.get_by_text("Draft", exact=True)).to_be_visible()
             expect(cards.first.get_by_role("heading", name=TEAM)).to_be_visible()
             expect(cards).to_have_count(40)
             expect(cards.last.get_by_role("heading", name=last_retained, exact=True)).to_be_visible()
@@ -140,22 +174,39 @@ def main() -> None:
             enter(applicant, "Message to the team leader", "I can help with the prototype.")
             activate(applicant, applicant.get_by_role("button", name="Request to join"))
             expect(applicant.get_by_text("Your request is pending.")).to_be_visible()
+            activate(applicant, applicant.locator("summary").filter(has_text=re.compile("^My join requests$")))
+            expect(applicant.get_by_role("button", name=f"Cancel request to {TEAM}")).to_be_visible()
 
-            caption(leader, "3 · Request appears live in the leader inbox")
+            caption(leader, "3 · A simulated conflict restores the optimistically removed request")
             expect(leader.get_by_role("button", name="Accept Demo Applicant")).to_be_visible()
-            leader.wait_for_timeout(1500)
+            verify_approval_rollback(leader)
+            leader.wait_for_timeout(2000)
+            caption(leader, "4 · Successful approval turns the draft into a formed team")
             activate(leader, leader.get_by_role("button", name="Accept Demo Applicant"))
             expect(applicant.get_by_text("2/4 seats", exact=True)).to_be_visible()
+            expect(applicant.get_by_text("Formed", exact=True)).to_be_visible()
             expect(applicant.get_by_role("button", name="Leave team")).to_be_visible()
             caption(applicant, "3 · Approval and seat count update without reloading")
             fits_viewport(applicant)
             applicant.wait_for_timeout(1500)
 
-            caption(leader, "4 · Expiring invite, teammate ranking and audit trail")
+            caption(leader, "5 · A rotated invite disappears live from the previous tab")
             activate(leader, leader.get_by_role("button", name="Generate invite code"))
             expect(leader.locator(".invite")).to_contain_text("Expires")
+            with closing(browser.new_context()) as second_context:
+                second_leader = second_context.new_page()
+                sign_in_as_leader(second_leader)
+                activate(second_leader, second_leader.get_by_role("button", name="Generate invite code"))
+                expect(second_leader.locator(".invite")).to_contain_text("Expires")
+                expect(leader.locator(".invite")).to_have_count(0)
+
+            caption(leader, "6 · Suggestions update when a match arrives, and the team audit records approval")
             activate(leader, leader.get_by_role("button", name="Rank available teammates"))
             expect(leader.get_by_text("Skills score measures coverage", exact=False)).to_be_visible()
+            with closing(browser.new_context()) as candidate_context:
+                candidate = candidate_context.new_page()
+                register(candidate, "Matching", RANKING_SKILL)
+                expect(leader.get_by_text("Demo Matching", exact=True)).to_be_visible()
             activate(leader, leader.locator("summary").filter(has_text=re.compile("^Team activity$")))
             expect(leader.get_by_text("request.accepted by Demo Leader")).to_be_visible()
             caption(applicant, "Verified · two independent sessions, mobile layout and keyboard")
@@ -174,7 +225,7 @@ def main() -> None:
         "-t", "299", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(OUTPUT / "racesafe-walkthrough.mp4"),
     ], check=True)
-    print("Keyboard-only mobile and desktop flows, stale filtering, and two-session live updates passed.")
+    print("Keyboard-only desktop and mobile flows, optimistic rollback, live invite rotation, and live ranking passed.")
 
 
 if __name__ == "__main__":

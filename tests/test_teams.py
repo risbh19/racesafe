@@ -1,10 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
 
+from backend.db import make_engine
 from backend.models import AuditEvent, InviteCode, JoinRequest
+from backend.services.limits import RateLimiter
 from conftest import key
 
 pytestmark = pytest.mark.asyncio
@@ -17,6 +20,20 @@ async def test_create_team_adds_leader(race):
     team = response.json()
     assert (team["leader_id"], team["member_count"]) == (leader, 1)
     assert [member["id"] for member in team["members"]] == [leader]
+
+
+async def test_skill_length_is_validated_after_unicode_normalization(race):
+    (_, leader), = await race.users()
+    skill = "İ" * 20
+    created = await race.client.post(
+        "/api/hackathons/1/teams", headers={**leader, **key()},
+        json={"name": "Example Team", "needed_skills": [skill]},
+    )
+    assert created.status_code == 422
+    filtered = await race.client.get(
+        "/api/hackathons/1/board", headers=leader, params={"skill": skill},
+    )
+    assert filtered.status_code == 422
 
 
 async def test_create_requires_idempotency_key(race):
@@ -101,6 +118,18 @@ async def test_rotation_revokes_old_invite(race):
     assert (await race.redeem(new, joiner)).status_code == 200
 
 
+async def test_invite_rotation_exposes_only_version_to_leader(race):
+    (_, leader), (_, observer) = await race.users(2)
+    team_id = await race.team(leader)
+    path = f"/api/teams/{team_id}"
+    first = (await race.client.post(path + "/invite-code", headers=leader)).json()
+    second = (await race.client.post(path + "/invite-code", headers=leader)).json()
+    detail = await race.client.get(path, headers=leader)
+    assert detail.json()["invite_version"] == second["version"] > first["version"]
+    assert second["code"] not in detail.text
+    assert (await race.client.get(path, headers=observer)).json()["invite_version"] is None
+
+
 async def test_expired_invite(race):
     (_, leader), (_, joiner) = await race.users(2)
     team_id = await race.team(leader)
@@ -117,6 +146,21 @@ async def test_invite_rate_limit(race):
     for _ in range(8):
         assert (await race.redeem("AAAAAAAAAAAA", headers)).status_code == 400
     assert (await race.redeem("AAAAAAAAAAAA", headers)).status_code == 429
+
+
+async def test_invite_rate_limit_is_shared_across_connection_pools(race):
+    (actor, headers), = await race.users()
+    for _ in range(8):
+        assert (await race.redeem("AAAAAAAAAAAA", headers)).status_code == 400
+    state = race.app.state
+    replacement = RateLimiter(make_engine(state.settings, pool_size=1), state.secret)
+    try:
+        with pytest.raises(HTTPException) as blocked:
+            await replacement.take("invite-user", str(actor), limit=8, seconds=600)
+        assert blocked.value.status_code == 429
+        assert int(blocked.value.headers["Retry-After"]) > 0
+    finally:
+        await replacement.engine.dispose()
 
 
 async def test_completed_invite_retry_replays_at_rate_limit(race):
@@ -248,3 +292,65 @@ async def test_audit_is_append_only(race):
     with pytest.raises(DBAPIError, match="append-only"):
         async with race.app.state.sessions.begin() as session:
             await session.execute(update(AuditEvent).values(action="tampered"))
+
+
+async def test_draft_forms_at_minimum_and_returns_to_draft_after_departure(race):
+    (_, leader), (_, member) = await race.users(2)
+    team_id = await race.team(leader)
+    path = f"/api/teams/{team_id}"
+    assert (await race.client.get(path, headers=leader)).json()["is_draft"] is True
+    assert (await race.redeem(await race.invite(team_id, leader), member)).status_code == 200
+    assert (await race.client.get(path, headers=leader)).json()["is_draft"] is False
+    assert (await race.client.post(path + "/lock", headers=leader)).status_code == 200
+    assert (await race.client.delete(path + "/members/me", headers=member)).status_code == 200
+    team = (await race.client.get(path, headers=leader)).json()
+    assert team["is_draft"] is True and team["locked"] is False
+    audit = (await race.client.get(path + "/audit", headers=leader)).json()
+    assert {"team.formed", "team.returned_to_draft", "team.reopened"} <= {
+        event["action"] for event in audit["events"]
+    }
+
+
+async def test_archived_team_audit_records_field_changes_and_pages(race):
+    (_, leader), (_, outsider) = await race.users(2)
+    team_id = await race.team(leader)
+    path = f"/api/teams/{team_id}"
+    edited = await race.client.patch(path, json={"name": "Edited Team"}, headers=leader)
+    assert edited.status_code == 200
+    request_id = await race.request(team_id, outsider)
+    assert (await race.client.delete(path + "/members/me", headers=leader)).json()["deleted"]
+    archived = (await race.client.get("/api/me/archived-teams", headers=leader)).json()
+    assert [(team["id"], team["name"]) for team in archived["teams"]] == [(team_id, "Edited Team")]
+    assert (await race.client.get(path + "/audit", headers=outsider)).status_code == 403
+    latest = (await race.client.get(path + "/audit?limit=2", headers=leader)).json()
+    deleted, cancelled = latest["events"]
+    assert deleted["action"] == "team.deleted"
+    assert cancelled["action"] == "request.cancelled" and cancelled["details"]["request_id"] == request_id
+    older = (await race.client.get(
+        path + "/audit", params={"before": latest["next_before"]}, headers=leader,
+    )).json()
+    assert [event["action"] for event in older["events"]] == [
+        "member.left", "request.created", "team.updated", "team.created",
+    ]
+    edited, created = older["events"][-2:]
+    assert edited["details"]["changes"] == {"name": {"before": "Example Team", "after": "Edited Team"}}
+    assert created["action"] == "team.created" and older["next_before"] is None
+
+
+async def test_applicant_can_find_and_cancel_an_older_pending_request(race):
+    leaders = await race.users(21)
+    (_, applicant), = await race.users()
+    teams = [await race.team(headers, f"Candidate Team {index}") for index, (_, headers) in enumerate(leaders)]
+    requests = [await race.request(team_id, applicant) for team_id in teams]
+    endpoint = "/api/me/join-requests"
+    first = (await race.client.get(endpoint, headers=applicant)).json()
+    assert len(first["requests"]) == 20
+    second = (await race.client.get(
+        endpoint, params={"before": first["next_before"]}, headers=applicant,
+    )).json()
+    assert [row["id"] for row in second["requests"]] == requests[:1]
+    assert second["next_before"] is None
+    path = f"/api/teams/{teams[0]}"
+    assert (await race.client.get(path, headers=applicant)).json()["my_pending_request_id"] == requests[0]
+    assert (await race.client.delete(f"/api/join-requests/{requests[0]}", headers=applicant)).status_code == 200
+    assert (await race.client.get(path, headers=applicant)).json()["my_pending_request_id"] is None

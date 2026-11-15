@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     direct_database_url: str | None = None
     jwt_secret: SecretStr | None = Field(default=None, min_length=32)
     require_jwt_secret: bool = False
+    metrics_token: SecretStr | None = Field(default=None, min_length=32)
     database_pool_size: int = Field(default=12, ge=2, le=64)
     login_concurrency: int = Field(default=4, ge=1, le=32)
     token_minutes: int = Field(default=60, ge=5, le=1440)
