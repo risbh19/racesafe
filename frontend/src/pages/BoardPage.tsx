@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { skillList, utcLabel, type Api, type Person, type Profile, type Team } from '../api'
 import { loadBoardWindow, PAGE_SIZE } from '../boardPagination'
+import { Avatar, Dialog, Skills } from '../components/WorkspaceUI'
 
 type Board = { teams: Team[]; next_before: number | null }
 type People = { people: Person[]; next_after: number | null }
@@ -12,14 +13,18 @@ type Snapshot = { scope: string; count: number; next: number | null } & (
 
 export type Run = (action: () => Promise<void>, success?: string) => Promise<void>
 
-export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
-  api: Api; profile: Profile; revision: number; busy: boolean; run: Run; openTeam: (id: number) => void
+export function BoardPage({ api, profile, revision, busy, run, openTeam, joinWithCode }: {
+  api: Api; profile: Profile; revision: number; busy: boolean; run: Run
+  openTeam: (id: number) => void; joinWithCode: () => void
 }) {
   const [tab, setTab] = useState<Tab>('teams')
   const [filter, setFilter] = useState('')
+  const [searchText, setSearchText] = useState('')
   const [pageRequest, setPageRequest] = useState({ count: PAGE_SIZE })
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [failure, setFailure] = useState<{ scope: string; message: string } | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
   const base = '/hackathons/' + profile.hackathon_id
   const scope = JSON.stringify([base, tab, filter])
   const current = snapshot?.scope === scope ? snapshot : null
@@ -71,9 +76,8 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
     setPageRequest({ count: PAGE_SIZE })
   }
 
-  function search(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const next = String(new FormData(event.currentTarget).get('skill') ?? '').trim()
+  function applyFilter(value: string) {
+    const next = value.trim()
     if (next !== filter) {
       setSnapshot(null)
       setFailure(null)
@@ -82,70 +86,90 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
     }
   }
 
+  function dismissCreate() {
+    if (!busy) {
+      setCreating(false)
+      setCreateError('')
+    }
+  }
+
   function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setCreateError('')
     const form = new FormData(event.currentTarget)
     void run(async () => {
-      const result = await api<{ team_id: number }>(base + '/teams', {
-        method: 'POST', idempotent: true,
-        body: {
-          name: form.get('name'), description: form.get('description'),
-          needed_skills: skillList(String(form.get('skills') ?? '')),
-        },
-      })
-      openTeam(result.team_id)
-    }, 'Team created.')
+      try {
+        const result = await api<{ team_id: number; is_draft?: boolean }>(base + '/teams', {
+          method: 'POST', idempotent: true,
+          body: {
+            name: form.get('name'), description: form.get('description'),
+            needed_skills: skillList(String(form.get('skills') ?? '')),
+          },
+        })
+        setCreating(false)
+        openTeam(result.team_id)
+      } catch (reason) {
+        setCreateError((reason as Error).message)
+        throw reason
+      }
+    }, 'Team workspace created.')
   }
 
   return (
     <>
-      <section className="board-hero">
-        <h1>Team board</h1>
-        <p>Find an open seat or meet participants looking for a team.</p>
+      <header className="board-banner">
+        <div className="board-banner-copy">
+          <h1>Find your team</h1>
+          <p>Explore open teams or meet people looking for teammates.</p>
+        </div>
         {!profile.team && (
-          <details className="create-team">
-            <summary>Create a team</summary>
-            <form className="stack inset" onSubmit={create}>
-              <label>Team name<input name="name" minLength={3} maxLength={40} required /></label>
-              <label>Description<textarea name="description" maxLength={500} rows={3} /></label>
-              <label>Skills you need <span className="muted">(separate with commas)</span><input name="skills" /></label>
-              <button className="primary" disabled={busy}>Create team</button>
-            </form>
-          </details>
+          <div className="banner-actions">
+            <button type="button" className="banner-secondary" onClick={joinWithCode}>Join with code</button>
+            <button type="button" className="banner-primary" onClick={() => setCreating(true)}><span aria-hidden="true">+</span> Create a team</button>
+          </div>
         )}
-      </section>
+      </header>
 
-      <div className="board-tools">
-        <div className="segmented" role="group" aria-label="Board view">
+      <div className="board-tools view-tools">
+        <div className="view-switch" role="group" aria-label="Board view">
           <button type="button" aria-pressed={tab === 'teams'} onClick={() => selectTab('teams')}>Open teams</button>
           <button type="button" aria-pressed={tab === 'people'} onClick={() => selectTab('people')}>People</button>
         </div>
-        <form className="row filter" onSubmit={search}>
-          <label htmlFor="skill-filter">Filter by skill</label>
-          <input id="skill-filter" name="skill" maxLength={30} placeholder="e.g. Python" />
-          <button>Apply</button>
+        <form className="filter" onSubmit={(event) => { event.preventDefault(); applyFilter(searchText) }}>
+          <div className="search-field">
+            <label className="sr-only" htmlFor="skill-filter">Filter by skill</label>
+            <span className="search-icon" aria-hidden="true" />
+            <input id="skill-filter" name="skill" value={searchText} maxLength={30} placeholder="Filter by skill"
+              onChange={(event) => setSearchText(event.currentTarget.value)} />
+          </div>
+          <button type="submit">Apply</button>
         </form>
       </div>
+      {filter && <div className="filter-summary"><span>Showing results for <strong>{filter}</strong></span>
+        <button className="quiet" type="button" onClick={() => { setSearchText(''); applyFilter('') }}>Clear filter</button></div>}
       {error && <p role="alert" className="error">{error}</p>}
       {tab === 'teams' && (
         <section aria-label="Open teams" className="cards">
           {board?.map((team) => (
             <article key={team.id} className="panel team-card">
+              <div className="card-top">
+                <Avatar name={team.name} tone={team.id} />
+                <span className={'badge ' + (team.is_draft ? 'badge-draft' : 'badge-open')}>{team.is_draft ? 'Draft' : 'Recruiting'}</span>
+              </div>
               <div className="team-card-info">
                 <h2>{team.name}</h2>
-                {team.is_draft && <p className="muted">Draft · recruiting to form a team</p>}
-                {team.description && <p className="muted">{team.description}</p>}
-                {team.needed_skills.length > 0 && <div className="tags">{team.needed_skills.map((skill) => <span key={skill}>{skill}</span>)}</div>}
+                {team.description && <p>{team.description}</p>}
+                <Skills items={team.needed_skills} limit={3} />
               </div>
               <div className="capacity">
                 <div className="capacity-label">
-                  <span>{team.member_count}/{team.max_size} filled</span>
-                  <span className="seat-count">{team.max_size - team.member_count} open</span>
+                  <span><strong>{team.member_count}/{team.max_size}</strong> members</span>
+                  <span>{team.max_size - team.member_count} open</span>
                 </div>
                 <progress aria-label="Seats filled" value={team.member_count} max={team.max_size} />
               </div>
               <button className="card-action" type="button" onClick={() => openTeam(team.id)} aria-label={'View ' + team.name}>
-                View team <span aria-hidden="true">→</span>
+                View team <span aria-hidden="true">↗</span>
               </button>
             </article>
           ))}
@@ -158,12 +182,12 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
       {tab === 'people' && (
         <section aria-label="Available teammates" className="cards">
           {people?.map((person) => (
-            <article key={person.id} className="panel">
+            <article key={person.id} className="panel person-card">
               <div className="person-heading">
-                <span className="avatar" aria-hidden="true">{person.display_name.slice(0, 1).toUpperCase()}</span>
+                <Avatar name={person.display_name} tone={person.id} />
                 <div><h2>{person.display_name}</h2><p>{utcLabel(person.utc_offset_minutes)}</p></div>
               </div>
-              {person.skills.length > 0 && <div className="tags">{person.skills.map((skill) => <span key={skill}>{skill}</span>)}</div>}
+              <Skills items={person.skills} />
             </article>
           ))}
           {!people && !error && <p className="panel empty-state" role="status">Loading people…</p>}
@@ -176,6 +200,19 @@ export function BoardPage({ api, profile, revision, busy, run, openTeam }: {
         <button className="load-more" type="button"
           disabled={busy || (!error && current.count < pageRequest.count)}
           onClick={() => setPageRequest({ count: current.count + PAGE_SIZE })}>Load more</button>}
+      {creating && <Dialog title="Create a team" onDismiss={dismissCreate}>
+        <form className="stack" onSubmit={create}>
+          <label>Team name<input name="name" minLength={3} maxLength={40} required placeholder="e.g. Pixel Pantry" /></label>
+          <label>Description<textarea name="description" maxLength={500} rows={3} placeholder="What are you planning to build?" /></label>
+          <label>Skills you need <input name="skills" placeholder="Python, design, React" /></label>
+          <p className="field-hint">Separate skills with commas.</p>
+          {createError && <p className="error" role="alert">{createError}</p>}
+          <div className="dialog-actions">
+            <button type="button" disabled={busy} onClick={dismissCreate}>Cancel</button>
+            <button className="primary" disabled={busy}>{busy ? 'Creating…' : 'Create team'}</button>
+          </div>
+        </form>
+      </Dialog>}
     </>
   )
 }

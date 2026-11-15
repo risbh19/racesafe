@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useOptimistic, useState, type FormEvent } from 'react'
 import { skillList, utcLabel, type Api, type Person, type Profile, type Team } from '../api'
 import { AuditHistory } from '../components/Activity'
+import { Avatar, Dialog, Skills } from '../components/WorkspaceUI'
 import type { Run } from './BoardPage'
 
 type Detail = Team & {
@@ -16,6 +17,8 @@ type Suggestion = Person & {
 }
 type Ranking = { explanation: string; suggestions: Suggestion[] }
 type Invite = { code: string; expires_at: string; version: number }
+type Section = 'overview' | 'inbox' | 'manage' | 'activity'
+type Confirmation = { kind: 'leave' } | { kind: 'remove'; person: Detail['members'][number] }
 
 export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
   api: Api; profile: Profile; teamId: number; revision: number; busy: boolean; run: Run; back: () => void
@@ -28,6 +31,9 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
   const [rankingAttempt, setRankingAttempt] = useState(0)
   const [rankingError, setRankingError] = useState('')
   const [invite, setInvite] = useState<Invite | null>(null)
+  const [copyFeedback, setCopyFeedback] = useState<{ version: number; message: string } | null>(null)
+  const [section, setSection] = useState<Section>('overview')
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
   const [error, setError] = useState('')
   const path = '/teams/' + teamId
   const leader = team?.leader_id === profile.id
@@ -100,6 +106,11 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
 
   const member = team.members.some((person) => person.id === profile.id)
   const pendingRequest = team.my_pending_request_id
+  const canApply = !profile.team && !member && !team.locked && team.member_count < team.max_size
+  const restrictedSection = ((section === 'inbox' || section === 'manage') && !leader)
+    || (section === 'activity' && !member)
+  const activeSection = restrictedSection ? 'overview' : section
+  const status = team.locked ? 'Finalized' : team.is_draft ? 'Draft' : 'Formed'
 
   function action(url: string, method: string, success: string, idempotent = false) {
     void run(async () => { await api(url, { method, idempotent }) }, success)
@@ -141,105 +152,162 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
     }, 'Team updated.')
   }
 
+  async function copyInvite(current: Invite) {
+    try {
+      await navigator.clipboard.writeText(current.code)
+      setCopyFeedback({ version: current.version, message: 'Invite code copied.' })
+    } catch {
+      setCopyFeedback({ version: current.version, message: 'Select and copy the code above.' })
+    }
+  }
+
+  function confirmMembershipChange() {
+    if (!confirmation) return
+    setConfirmation(null)
+    if (confirmation.kind === 'leave') {
+      void run(async () => {
+        await api(path + '/members/me', { method: 'DELETE' })
+        back()
+      }, 'You left the team.')
+    } else {
+      action(path + '/members/' + confirmation.person.id, 'DELETE', 'Member removed.')
+    }
+  }
+
   return (
     <>
-      <div className="row"><button className="back-button" type="button" onClick={back}><span aria-hidden="true">←</span> Back to board</button></div>
-      <header className="board-hero team-hero">
-        <div><h1>{team.name}</h1>{team.description && <p>{team.description}</p>}</div>
-        <div className="capacity">
+      <button className="back-button" type="button" onClick={back}><span aria-hidden="true">←</span> Back to board</button>
+      <header className="panel team-header">
+        <div className="team-title">
+          <Avatar name={team.name} tone={team.id} />
+          <div className="team-intro">
+            <div className="title-line">
+              <h1>{team.name}</h1>
+              <span className={'badge ' + (team.is_draft ? 'badge-draft' : 'badge-open')}>{status}</span>
+            </div>
+            {team.description && <p>{team.description}</p>}
+            <Skills items={team.needed_skills} />
+          </div>
+        </div>
+        <div className="capacity team-capacity">
           <div className="capacity-label">
-            <span>{team.member_count}/{team.max_size} seats</span>
-            <span className="seat-count">{team.locked ? 'Finalized' : team.is_draft ? 'Draft' : 'Formed'}</span>
+            <strong>{team.member_count}/{team.max_size} seats</strong>
+            <span>{team.locked || team.member_count === team.max_size ? 'Closed' : (team.max_size - team.member_count) + ' open'}</span>
           </div>
           <progress aria-label="Seats filled" value={team.member_count} max={team.max_size} />
+          {team.is_draft && <p>Forms at {team.min_size} members</p>}
         </div>
       </header>
 
-      <div className="two-columns">
-        <section className="panel">
-          <h2>Members</h2>
+      {member && (
+        <div className="view-tools team-tools">
+          <div className="view-switch" role="group" aria-label="Team sections">
+            <button type="button" aria-pressed={activeSection === 'overview'} onClick={() => setSection('overview')}>Overview</button>
+            {leader && <>
+              <button type="button" aria-label="Join requests" aria-pressed={activeSection === 'inbox'} onClick={() => setSection('inbox')}>
+                Join requests{inboxCursor === null && visibleRequests.length > 0 &&
+                  <span className="tab-count" aria-hidden="true">{visibleRequests.length}{currentInbox?.next_after != null ? '+' : ''}</span>}
+              </button>
+              <button type="button" aria-pressed={activeSection === 'manage'} onClick={() => setSection('manage')}>Manage</button>
+            </>}
+            <button type="button" aria-pressed={activeSection === 'activity'} onClick={() => setSection('activity')}>Activity</button>
+          </div>
+        </div>
+      )}
+
+      {activeSection === 'overview' && <div className={'team-columns' + (leader || !member ? '' : ' single-column')}>
+        <section className="panel roster">
+          <div className="section-heading"><h2>Members</h2><span>{team.members.length} of {team.max_size}</span></div>
           <ul className="item-list">
             {team.members.map((person) => (
               <li key={person.id}>
                 <div className="person-heading">
-                  <span className="avatar" aria-hidden="true">{person.display_name.slice(0, 1).toUpperCase()}</span>
+                  <Avatar name={person.display_name} tone={person.id} />
                   <div>
-                    <strong>{person.display_name}</strong>
-                    {person.id === team.leader_id && <span className="leader-label">Leader</span>}
-                    {person.skills.length > 0 && <div className="tags">{person.skills.map((skill) => <span key={skill}>{skill}</span>)}</div>}
+                    <div className="title-line"><strong>{person.display_name}</strong>
+                      {person.id === team.leader_id && <span className="badge badge-open">Leader</span>}</div>
+                    <Skills items={person.skills} />
                   </div>
                 </div>
-                {leader && person.id !== profile.id && (
-                  <button type="button" disabled={busy} aria-label={'Remove ' + person.display_name} onClick={() => {
-                    if (window.confirm('Remove ' + person.display_name + ' from the team?')) {
-                      action(path + '/members/' + person.id, 'DELETE', 'Member removed.')
-                    }
-                  }}>Remove</button>
-                )}
+                {leader && person.id !== profile.id && <button className="quiet" type="button" disabled={busy}
+                  aria-label={'Remove ' + person.display_name} onClick={() => setConfirmation({ kind: 'remove', person })}>Remove</button>}
               </li>
             ))}
           </ul>
-          {member && <button type="button" disabled={busy} onClick={() => {
-            if (window.confirm('Leave ' + team.name + '?')) {
-              void run(async () => { await api(path + '/members/me', { method: 'DELETE' }); back() }, 'You left the team.')
-            }
-          }}>Leave team</button>}
-          {!profile.team && !team.locked && team.member_count < team.max_size && pendingRequest === null && (
-            <form className="stack inset" onSubmit={requestJoin}>
-              <label>Message to the team leader<textarea name="message" maxLength={300} rows={2} /></label>
-              <button className="primary" disabled={busy}>Request to join</button>
-            </form>
-          )}
-          {pendingRequest !== null && <div className="row">
-            <p className="muted">Your request is pending.</p>
-            <button type="button" disabled={busy} onClick={() => {
-              action('/join-requests/' + pendingRequest, 'DELETE', 'Join request cancelled.')
-            }}>Cancel join request</button>
+          {member && <div className="section-footer">
+            <button className="quiet danger-text" type="button" disabled={busy} onClick={() => setConfirmation({ kind: 'leave' })}>Leave team</button>
           </div>}
         </section>
 
-        {leader && (
-          <section className="panel stack">
-            <h2>Manage team</h2>
-            {team.is_draft && <p className="muted">This draft becomes a team at {team.min_size} members.</p>}
-            <div className="row">
-              <button type="button" disabled={busy || (!team.locked && team.member_count < team.min_size)} onClick={() =>
-                action(path + '/lock', team.locked ? 'DELETE' : 'POST', team.locked ? 'Team reopened.' : 'Team finalized.')
-              }>{team.locked ? 'Reopen team' : 'Finalize team'}</button>
-              <button type="button" disabled={busy} onClick={() => void run(async () => {
-                setInvite(await api<Invite>(path + '/invite-code', { method: 'POST' }))
-              }, 'Invite code generated.')}>{shownInvite ? 'Rotate invite code' : 'Generate invite code'}</button>
-            </div>
-            {shownInvite && <div className="invite"><code>{shownInvite.code}</code><span>Expires {new Date(shownInvite.expires_at).toLocaleString()}</span></div>}
-            <details>
-              <summary>Edit team details</summary>
-              <form className="stack inset" onSubmit={edit}>
-                <label>Name<input name="name" minLength={3} maxLength={40} defaultValue={team.name} required /></label>
-                <label>Description<textarea name="description" maxLength={500} defaultValue={team.description} /></label>
-                <label>Needed skills<input name="skills" defaultValue={team.needed_skills.join(', ')} /></label>
-                <label className="check"><input type="checkbox" name="looking" defaultChecked={team.looking} />Show on open team board</label>
-                <button disabled={busy}>Save team</button>
-              </form>
-            </details>
-          </section>
-        )}
-      </div>
+        {canApply && pendingRequest === null && <section className="panel stack">
+          <div className="section-heading"><h2>Join this team</h2></div>
+          <p className="muted">Send the leader a short note about how you can contribute.</p>
+          <form className="stack" onSubmit={requestJoin}>
+            <label>Message to the team leader<textarea name="message" maxLength={300} rows={3} placeholder="Tell them what you'd bring to the team" /></label>
+            <button className="primary" disabled={busy}>Request to join</button>
+          </form>
+        </section>}
 
-      {leader && (
-        <section className="panel">
-          <h2>Join requests</h2>
+        {pendingRequest !== null && <section className="panel stack">
+          <div className="section-heading"><h2>Join request</h2><span className="badge badge-draft">Pending</span></div>
+          <p>Your request is pending.</p>
+          <button type="button" disabled={busy} onClick={() => {
+            action('/join-requests/' + pendingRequest, 'DELETE', 'Join request cancelled.')
+          }}>Cancel join request</button>
+        </section>}
+
+        {!member && !canApply && pendingRequest === null && <section className="panel stack">
+          <h2>{team.locked || team.member_count >= team.max_size ? 'Recruitment closed' : 'Already on a team'}</h2>
+          <p className="muted">{team.locked || team.member_count >= team.max_size
+            ? 'This team isn’t taking join requests right now.'
+            : 'You can be a member of one team at this hackathon.'}</p>
+        </section>}
+
+        {leader && <section className="panel stack matches">
+          <div className="section-heading"><h2>Teammate suggestions</h2></div>
+          {rankingAttempt === 0 && <p className="muted">Find available teammates by missing skills and time zone.</p>}
+          {(rankingAttempt === 0 || rankingError) && <button type="button" disabled={busy} onClick={() => {
+            setRankingError('')
+            setRankingAttempt(rankingAttempt + 1)
+          }}>{rankingError ? 'Retry suggestions' : 'Rank available teammates'}</button>}
+          {rankingAttempt > 0 && !ranking && !rankingError && <p role="status">Ranking available teammates…</p>}
+          {rankingError && <p role="alert">{rankingError}</p>}
+          {ranking && <>
+            <ul className="item-list">
+              {ranking.suggestions.map((person) => (
+                <li key={person.id}>
+                  <div className="person-heading">
+                    <Avatar name={person.display_name} tone={person.id} />
+                    <div><strong>{person.display_name}</strong><p>{utcLabel(person.utc_offset_minutes)}</p>
+                      <Skills items={person.matched_skills} /></div>
+                  </div>
+                  <span className="badge badge-open" title="Match score">{person.score}/100</span>
+                </li>
+              ))}
+            </ul>
+            {ranking.suggestions.length === 0 && <p>No available participants.</p>}
+            <details className="score-explanation"><summary>How matching works</summary><p>{ranking.explanation}</p></details>
+          </>}
+        </section>}
+      </div>}
+
+      {activeSection === 'inbox' && (
+        <section className="panel stack">
+          <div className="section-heading"><h2>Join requests</h2></div>
           {inboxError && <p role="alert" className="error">{inboxError}</p>}
-          {!currentInbox && !inboxError && <p role="status">Loading requests.</p>}
-          {currentInbox && visibleRequests.length === 0 && <p className="muted">No pending requests on this page.</p>}
-          <ul className="item-list">
+          {!currentInbox && !inboxError && <p role="status">Loading requests…</p>}
+          {currentInbox && visibleRequests.length === 0 && <p className="empty-state">No pending requests on this page.</p>}
+          <ul className="item-list inbox-list">
             {visibleRequests.map((request) => (
               <li key={request.id}>
-                <div><strong>{request.display_name}</strong>{request.message && <p>{request.message}</p>}</div>
+                <div className="person-heading"><Avatar name={request.display_name} tone={request.user_id} />
+                  <div><strong>{request.display_name}</strong>{request.message && <p>{request.message}</p>}</div>
+                </div>
                 <div className="row">
-                  <button className="primary" type="button" disabled={busy} aria-label={'Accept ' + request.display_name}
-                    onClick={() => acceptRequest(request.id)}>Accept</button>
                   <button type="button" disabled={busy} aria-label={'Decline ' + request.display_name}
                     onClick={() => action('/join-requests/' + request.id + '/decline', 'POST', 'Request declined.')}>Decline</button>
+                  <button className="primary" type="button" disabled={busy} aria-label={'Accept ' + request.display_name}
+                    onClick={() => acceptRequest(request.id)}>Accept</button>
                 </div>
               </li>
             ))}
@@ -260,30 +328,54 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
         </section>
       )}
 
-      {leader && (
-        <section className="panel">
-          <h2>Teammate suggestions</h2>
-          {(rankingAttempt === 0 || rankingError) && <button type="button" disabled={busy} onClick={() => {
-            setRankingError('')
-            setRankingAttempt(rankingAttempt + 1)
-          }}>{rankingError ? 'Retry suggestions' : 'Rank available teammates'}</button>}
-          {rankingAttempt > 0 && !ranking && !rankingError && <p role="status">Ranking available teammates…</p>}
-          {rankingError && <p role="alert">{rankingError}</p>}
-          {ranking && <><p className="muted">{ranking.explanation}</p>
-            <ul className="item-list">
-              {ranking.suggestions.map((person) => (
-                <li key={person.id}>
-                  <div><strong>{person.display_name}</strong><p>{utcLabel(person.utc_offset_minutes)} · {person.matched_skills.join(', ') || 'No matched skills'}</p></div>
-                  <span className="seat-count">{person.score}/100</span>
-                </li>
-              ))}
-            </ul>
-            {ranking.suggestions.length === 0 && <p>No available participants.</p>}
+      {activeSection === 'manage' && <div className="team-columns manage-columns">
+        <section className="panel stack invite-panel">
+          <div className="section-heading"><h2>Invite code</h2></div>
+          <p className="muted">Share a code that expires in 24 hours. Generating another code revokes the previous one.</p>
+          {shownInvite && <>
+            <div className="invite">
+              <code>{shownInvite.code}</code>
+              <button type="button" onClick={() => void copyInvite(shownInvite)}>Copy code</button>
+              <span>Expires {new Date(shownInvite.expires_at).toLocaleString()}</span>
+            </div>
+            {copyFeedback?.version === shownInvite.version && <p role="status">{copyFeedback.message}</p>}
           </>}
+          <button type="button" disabled={busy} onClick={() => void run(async () => {
+            setInvite(await api<Invite>(path + '/invite-code', { method: 'POST' }))
+          }, 'Invite code generated.')}>{shownInvite ? 'Rotate invite code' : 'Generate invite code'}</button>
         </section>
-      )}
+        <section className="panel stack details-panel">
+          <div className="section-heading"><h2>Team details</h2></div>
+          <form className="stack" onSubmit={edit}>
+            <label>Team name<input name="name" minLength={3} maxLength={40} defaultValue={team.name} required /></label>
+            <label>Description<textarea name="description" maxLength={500} rows={4} defaultValue={team.description} /></label>
+            <label>Needed skills<input name="skills" defaultValue={team.needed_skills.join(', ')} /></label>
+            <label className="check"><input type="checkbox" name="looking" defaultChecked={team.looking} />Show on open team board</label>
+            <button className="primary" disabled={busy}>Save team</button>
+          </form>
+        </section>
+        <section className="panel stack status-panel">
+          <div className="section-heading"><h2>Team status</h2></div>
+          <p className="muted">{team.is_draft ? 'Reach ' + team.min_size + ' members to finalize this team.'
+            : team.locked ? 'Finalized teams are closed to new members.' : 'Finalize when your roster is ready to close recruitment.'}</p>
+          <button type="button" disabled={busy || (!team.locked && team.is_draft)} onClick={() =>
+            action(path + '/lock', team.locked ? 'DELETE' : 'POST', team.locked ? 'Team reopened.' : 'Team finalized.')
+          }>{team.locked ? 'Reopen team' : 'Finalize team'}</button>
+        </section>
+      </div>}
 
-      {member && <AuditHistory api={api} revision={revision} teamId={teamId} />}
+      {activeSection === 'activity' && <AuditHistory api={api} revision={revision} teamId={teamId} />}
+
+      {confirmation && <Dialog title={confirmation.kind === 'leave' ? 'Leave team' : 'Remove member'} onDismiss={() => setConfirmation(null)}>
+        <div className="stack">
+          <p>{confirmation.kind === 'leave' ? 'Leave ' + team.name + '?'
+            : 'Remove ' + confirmation.person.display_name + ' from ' + team.name + '?'}</p>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setConfirmation(null)}>Cancel</button>
+            <button type="button" className="danger" onClick={confirmMembershipChange}>{confirmation.kind === 'leave' ? 'Leave team' : 'Remove member'}</button>
+          </div>
+        </div>
+      </Dialog>}
     </>
   )
 }
