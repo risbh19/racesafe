@@ -4,7 +4,17 @@ RaceSafe helps hackathon participants find teammates, request to join, and redee
 
 [Live demo](https://racesafe.onrender.com) · [Design note](docs/DESIGN.md) · [Load-test report](docs/LOAD-TEST.md) · [Walkthrough](docs/WALKTHROUGH.md)
 
-## Run locally on Windows
+## Run the full stack
+
+With Docker running, run this from the repository root.
+
+```sh
+docker compose up --build --wait
+```
+
+Open [RaceSafe](http://127.0.0.1:8000). Compose starts PostgreSQL, runs the migrations, and serves the built React app, API and event stream on the same origin. The database uses a named volume. Set `RACESAFE_PORT` or `RACESAFE_DB_PORT` if the default ports are occupied. The included signing and metrics tokens are for localhost development. Run `docker compose down` to stop the stack.
+
+### Run with hot reload on Windows
 
 Open PowerShell in the repository root. Start Docker Desktop first.
 
@@ -26,11 +36,11 @@ npm.cmd run dev
 
 Open [the React app](http://localhost:5173). [API docs](http://127.0.0.1:8000/docs) and the [database health endpoint](http://127.0.0.1:8000/api/health) are on port 8000. Register two accounts in separate browser sessions to demonstrate team creation, a request, leader approval, and automatic updates.
 
-Forming teams may have one member. A leader can finalize a team after it meets the minimum. Finalizing closes its seats. A departure below the minimum reopens it. A team with zero members is deleted and its audit history is retained.
+A participant starts a recruiting draft. The draft becomes a team as soon as it reaches the minimum. A leader can finalize a formed team to close its seats. A departure below the minimum returns an active or finalized team to draft status. The last departure deletes the team. The final member can read its retained audit history under **Archived teams**.
 
 ## Tests
 
-CI uses PostgreSQL 16 and runs the API suite, repeats concurrency tests five times, and builds and lints the React frontend. To run locally, create a **disposable database ending in _test** and set its URL before running the commands below. The tests truncate app tables in this database.
+CI uses PostgreSQL 16, runs the API suite and server-kill test, repeats concurrency tests five times, checks the browser workflow, and smoke-tests Docker Compose. To run locally, create a **disposable database ending in _test** and set its URL before running the commands below. The tests truncate app tables in this database.
 
 ```powershell
 docker compose exec db createdb -U racesafe racesafe_test
@@ -39,6 +49,17 @@ $env:TEST_DATABASE_URL = $env:DATABASE_URL
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pytest -q tests/test_concurrency.py --count=5
+.\.venv\Scripts\python.exe -m pytest -q tests/test_chaos.py
+```
+
+The chaos test pauses a real join transaction after seat reservation, kills the API process, and checks the seat counter, membership, audit event and idempotency response. It restarts the API and retries the same request twice to prove one successful join.
+
+## Metrics
+
+`GET /metrics` exposes Prometheus request counts by status, latency to response headers by route, and active live streams. Set a separate `METRICS_TOKEN` of at least 32 characters in production and send it as a bearer token. Local Compose can be checked with the following command.
+
+```sh
+curl -H "Authorization: Bearer racesafe-local-compose-metrics-token-for-development" http://127.0.0.1:8000/metrics
 ```
 
 ## Board benchmark

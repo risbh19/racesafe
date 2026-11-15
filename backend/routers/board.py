@@ -6,14 +6,14 @@ from sqlalchemy import any_, select
 
 from backend.db import Session
 from backend.models import Participant, Team, TeamMember, User
-from backend.schemas import DatabaseText, ID
+from backend.schemas import ID, Skill
 from backend.security import CurrentUser
 from backend.services.suggestions import score_candidate
 from backend.services.teams import participant, require_leader, team_summary
 
 router = APIRouter(prefix="/api")
 Limit = Annotated[int, Query(ge=1, le=100)]
-SkillFilter = Annotated[DatabaseText | None, Query(min_length=1, max_length=30)]
+SkillFilter = Annotated[Skill | None, Query()]
 
 
 def looking_users(hackathon_id: int):
@@ -70,7 +70,7 @@ async def board_snapshot(session: Session, hackathon_id: int, limit: int, before
     if before is not None:
         query = query.where(Team.id < before)
     if skill:
-        query = query.where(skill.strip().lower() == any_(Team.needed_skills))
+        query = query.where(skill == any_(Team.needed_skills))
     rows = (await session.scalars(query)).all()
     return JSONResponse({
         "teams": [team_summary(team) for team in rows[:limit]],
@@ -88,7 +88,7 @@ async def people(
     if after is not None:
         query = query.where(User.id > after)
     if skill:
-        query = query.where(skill.strip().lower() == any_(User.skills))
+        query = query.where(skill == any_(User.skills))
     rows = (await session.execute(query)).mappings().all()
     return {
         "people": [dict(row) for row in rows[:limit]],

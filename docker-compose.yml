@@ -1,4 +1,21 @@
 services:
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://racesafe:racesafe_dev@db:5432/racesafe
+      JWT_SECRET: ${JWT_SECRET:-racesafe-local-compose-signing-key-for-development}
+      METRICS_TOKEN: ${METRICS_TOKEN:-racesafe-local-compose-metrics-token-for-development}
+    ports:
+      - "127.0.0.1:${RACESAFE_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=2).close()"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   db:
     image: postgres:16-alpine
     environment:
@@ -6,7 +23,7 @@ services:
       POSTGRES_PASSWORD: racesafe_dev
       POSTGRES_DB: racesafe
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${RACESAFE_DB_PORT:-5432}:5432"
     volumes:
       - racesafe_pgdata:/var/lib/postgresql/data
     healthcheck:

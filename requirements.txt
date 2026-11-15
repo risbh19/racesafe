@@ -5,6 +5,8 @@ asyncpg
 alembic
 pydantic-settings
 argon2-cffi
+email-validator
+prometheus-client
 PyJWT
 pytest
 pytest-asyncio

@@ -7,11 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from backend.config import Settings
 
 
-def make_engine(settings: Settings):
+def make_engine(settings: Settings, *, pool_size: int | None = None):
     url, args = settings.database_connection()
     return create_async_engine(
         url, connect_args=args, pool_pre_ping=True,
-        pool_size=settings.database_pool_size, max_overflow=0,
+        pool_size=pool_size or settings.database_pool_size, max_overflow=0,
     )
 
 

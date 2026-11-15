@@ -1,14 +1,21 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { startTransition, useEffect, useOptimistic, useState, type FormEvent } from 'react'
 import { skillList, utcLabel, type Api, type Person, type Profile, type Team } from '../api'
+import { AuditHistory } from '../components/Activity'
 import type { Run } from './BoardPage'
 
-type Detail = Team & { members: Omit<Person, 'utc_offset_minutes'>[] }
+type Detail = Team & {
+  members: Omit<Person, 'utc_offset_minutes'>[]
+  invite_version: number | null
+  my_pending_request_id: number | null
+}
 type Pending = { id: number; user_id: number; display_name: string; message: string }
 type Inbox = { requests: Pending[]; next_after: number | null }
-type Event = { id: number; actor_id: number; actor_name: string | null; action: string; created_at: string }
+const NO_REQUESTS: Pending[] = []
 type Suggestion = Person & {
   score: number; skill_score: number; timezone_score: number; matched_skills: string[]
 }
+type Ranking = { explanation: string; suggestions: Suggestion[] }
+type Invite = { code: string; expires_at: string; version: number }
 
 export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
   api: Api; profile: Profile; teamId: number; revision: number; busy: boolean; run: Run; back: () => void
@@ -17,37 +24,35 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
   const [inbox, setInbox] = useState<{ cursor: number | null; data: Inbox } | null>(null)
   const [inboxError, setInboxError] = useState('')
   const [inboxCursors, setInboxCursors] = useState<(number | null)[]>([null])
-  const [events, setEvents] = useState<Event[]>([])
-  const [ranking, setRanking] = useState<{ explanation: string; suggestions: Suggestion[] } | null>(null)
-  const [invite, setInvite] = useState<{ code: string; expires_at: string } | null>(null)
+  const [ranking, setRanking] = useState<Ranking | null>(null)
+  const [rankingAttempt, setRankingAttempt] = useState(0)
+  const [rankingError, setRankingError] = useState('')
+  const [invite, setInvite] = useState<Invite | null>(null)
   const [error, setError] = useState('')
   const path = '/teams/' + teamId
   const leader = team?.leader_id === profile.id
   const inboxCursor = inboxCursors.at(-1) ?? null
   const currentInbox = inbox?.cursor === inboxCursor ? inbox.data : null
+  const [visibleRequests, hideRequest] = useOptimistic(
+    currentInbox?.requests ?? NO_REQUESTS,
+    (requests, id: number) => requests.filter((request) => request.id !== id),
+  )
+  const shownInvite = invite && invite.version === team?.invite_version ? invite : null
 
   useEffect(() => {
-    let active = true
-    async function load() {
-      try {
-        const current = await api<Detail>(path)
-        if (!active) return
-        setTeam(current)
-        setError('')
-        const audit = current.members.some((member) => member.id === profile.id)
-          ? await api<{ events: Event[] }>(path + '/audit').catch(() => ({ events: [] }))
-          : { events: [] }
-        if (active) setEvents(audit.events)
-      } catch (reason) {
-        if (active) {
-          setTeam(null)
-          setError((reason as Error).message)
-        }
-      }
-    }
-    void load()
-    return () => { active = false }
-  }, [api, path, profile.id, revision])
+    const controller = new AbortController()
+    const { signal } = controller
+    void api<Detail>(path, { signal }).then((current) => {
+      if (signal.aborted) return
+      setTeam(current)
+      setError('')
+    }).catch((reason: Error) => {
+      if (signal.aborted) return
+      setTeam(null)
+      setError(reason.message)
+    })
+    return () => controller.abort()
+  }, [api, path, revision])
 
   useEffect(() => {
     if (!leader) return
@@ -65,6 +70,27 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
     return () => controller.abort()
   }, [api, inboxCursor, leader, path, revision])
 
+  useEffect(() => {
+    if (!leader || rankingAttempt === 0) return
+    const controller = new AbortController()
+    const { signal } = controller
+    void api<Ranking>(path + '/suggestions', { signal }).then((data) => {
+      if (signal.aborted) return
+      setRanking(data)
+      setRankingError('')
+    }).catch((reason: Error) => {
+      if (!signal.aborted) setRankingError(reason.message)
+    })
+    return () => controller.abort()
+  }, [api, leader, path, rankingAttempt, revision])
+
+  useEffect(() => {
+    if (!invite) return
+    const remaining = Date.parse(invite.expires_at) - Date.now()
+    const timeout = window.setTimeout(() => setInvite(null), Math.max(0, remaining))
+    return () => window.clearTimeout(timeout)
+  }, [invite])
+
   if (!team) return (
     <section className="panel">
       <button type="button" onClick={back}>Back to board</button>
@@ -73,10 +99,24 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
   )
 
   const member = team.members.some((person) => person.id === profile.id)
-  const waiting = profile.requests.some((request) => request.team_id === teamId && request.status === 'pending')
+  const pendingRequest = team.my_pending_request_id
 
   function action(url: string, method: string, success: string, idempotent = false) {
     void run(async () => { await api(url, { method, idempotent }) }, success)
+  }
+
+  function acceptRequest(id: number) {
+    startTransition(async () => {
+      hideRequest(id)
+      await run(async () => {
+        await api('/join-requests/' + id + '/accept', { method: 'POST', idempotent: true })
+        setInbox((current) => current && {
+          ...current, data: {
+            ...current.data, requests: current.data.requests.filter((request) => request.id !== id),
+          },
+        })
+      }, 'Request accepted.')
+    })
   }
 
   function requestJoin(event: FormEvent<HTMLFormElement>) {
@@ -109,7 +149,7 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
         <div className="capacity">
           <div className="capacity-label">
             <span>{team.member_count}/{team.max_size} seats</span>
-            <span className="seat-count">{team.locked ? 'Finalized' : 'Forming'}</span>
+            <span className="seat-count">{team.locked ? 'Finalized' : team.is_draft ? 'Draft' : 'Formed'}</span>
           </div>
           <progress aria-label="Seats filled" value={team.member_count} max={team.max_size} />
         </div>
@@ -144,28 +184,33 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
               void run(async () => { await api(path + '/members/me', { method: 'DELETE' }); back() }, 'You left the team.')
             }
           }}>Leave team</button>}
-          {!profile.team && !team.locked && team.member_count < team.max_size && !waiting && (
+          {!profile.team && !team.locked && team.member_count < team.max_size && pendingRequest === null && (
             <form className="stack inset" onSubmit={requestJoin}>
               <label>Message to the team leader<textarea name="message" maxLength={300} rows={2} /></label>
               <button className="primary" disabled={busy}>Request to join</button>
             </form>
           )}
-          {waiting && <p className="muted">Your request is pending.</p>}
+          {pendingRequest !== null && <div className="row">
+            <p className="muted">Your request is pending.</p>
+            <button type="button" disabled={busy} onClick={() => {
+              action('/join-requests/' + pendingRequest, 'DELETE', 'Join request cancelled.')
+            }}>Cancel join request</button>
+          </div>}
         </section>
 
         {leader && (
           <section className="panel stack">
             <h2>Manage team</h2>
-            <p className="muted">{team.min_size} members are required to finalize.</p>
+            {team.is_draft && <p className="muted">This draft becomes a team at {team.min_size} members.</p>}
             <div className="row">
               <button type="button" disabled={busy || (!team.locked && team.member_count < team.min_size)} onClick={() =>
                 action(path + '/lock', team.locked ? 'DELETE' : 'POST', team.locked ? 'Team reopened.' : 'Team finalized.')
               }>{team.locked ? 'Reopen team' : 'Finalize team'}</button>
               <button type="button" disabled={busy} onClick={() => void run(async () => {
-                setInvite(await api(path + '/invite-code', { method: 'POST' }))
-              }, 'Invite code generated.')}>{invite ? 'Rotate invite code' : 'Generate invite code'}</button>
+                setInvite(await api<Invite>(path + '/invite-code', { method: 'POST' }))
+              }, 'Invite code generated.')}>{shownInvite ? 'Rotate invite code' : 'Generate invite code'}</button>
             </div>
-            {invite && <div className="invite"><code>{invite.code}</code><span>Expires {new Date(invite.expires_at).toLocaleString()}</span></div>}
+            {shownInvite && <div className="invite"><code>{shownInvite.code}</code><span>Expires {new Date(shownInvite.expires_at).toLocaleString()}</span></div>}
             <details>
               <summary>Edit team details</summary>
               <form className="stack inset" onSubmit={edit}>
@@ -185,14 +230,14 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
           <h2>Join requests</h2>
           {inboxError && <p role="alert" className="error">{inboxError}</p>}
           {!currentInbox && !inboxError && <p role="status">Loading requests.</p>}
-          {currentInbox?.requests.length === 0 && <p className="muted">No pending requests on this page.</p>}
+          {currentInbox && visibleRequests.length === 0 && <p className="muted">No pending requests on this page.</p>}
           <ul className="item-list">
-            {currentInbox?.requests.map((request) => (
+            {visibleRequests.map((request) => (
               <li key={request.id}>
                 <div><strong>{request.display_name}</strong>{request.message && <p>{request.message}</p>}</div>
                 <div className="row">
                   <button className="primary" type="button" disabled={busy} aria-label={'Accept ' + request.display_name}
-                    onClick={() => action('/join-requests/' + request.id + '/accept', 'POST', 'Request accepted.', true)}>Accept</button>
+                    onClick={() => acceptRequest(request.id)}>Accept</button>
                   <button type="button" disabled={busy} aria-label={'Decline ' + request.display_name}
                     onClick={() => action('/join-requests/' + request.id + '/decline', 'POST', 'Request declined.')}>Decline</button>
                 </div>
@@ -218,9 +263,12 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
       {leader && (
         <section className="panel">
           <h2>Teammate suggestions</h2>
-          <button type="button" disabled={busy} onClick={() => void run(async () => {
-            setRanking(await api(path + '/suggestions'))
-          })}>{ranking ? 'Refresh suggestions' : 'Rank available teammates'}</button>
+          {(rankingAttempt === 0 || rankingError) && <button type="button" disabled={busy} onClick={() => {
+            setRankingError('')
+            setRankingAttempt(rankingAttempt + 1)
+          }}>{rankingError ? 'Retry suggestions' : 'Rank available teammates'}</button>}
+          {rankingAttempt > 0 && !ranking && !rankingError && <p role="status">Ranking available teammates…</p>}
+          {rankingError && <p role="alert">{rankingError}</p>}
           {ranking && <><p className="muted">{ranking.explanation}</p>
             <ul className="item-list">
               {ranking.suggestions.map((person) => (
@@ -235,14 +283,7 @@ export function TeamPage({ api, profile, teamId, revision, busy, run, back }: {
         </section>
       )}
 
-      {member && (
-        <details className="panel">
-          <summary>Team activity</summary>
-          <ul className="item-list">
-            {events.map((entry) => <li key={entry.id}><span>{entry.action} by {entry.actor_name ?? 'user ' + entry.actor_id}</span><time dateTime={entry.created_at}>{new Date(entry.created_at).toLocaleString()}</time></li>)}
-          </ul>
-        </details>
-      )}
+      {member && <AuditHistory api={api} revision={revision} teamId={teamId} />}
     </>
   )
 }

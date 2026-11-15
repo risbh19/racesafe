@@ -84,7 +84,7 @@ async def race():
             assert actual.endswith("_test")
             await connection.execute(text(
                 "TRUNCATE pending_registrations, idempotency_keys, join_requests, invite_codes, "
-                "team_members, teams, participants, users CONTINUE IDENTITY"
+                "team_members, teams, participants, users, rate_limits CONTINUE IDENTITY"
             ))
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield RaceSafe(client, app)
