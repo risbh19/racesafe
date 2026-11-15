@@ -41,7 +41,7 @@ def enter(page: Page, field: str, value: str) -> None:
 
 def register(page: Page, role: str, skill: str | None = None) -> None:
     page.goto(ORIGIN, wait_until="domcontentloaded")
-    activate(page, page.get_by_role("button", name="Create a RaceSafe account"))
+    activate(page, page.get_by_role("button", name="Create account", exact=True))
     enter(page, "Display name", f"Demo {role}")
     enter(page, "Email", f"walkthrough-{role.lower()}@example.test")
     enter(page, "Password", "Walkthrough-demo-2026")

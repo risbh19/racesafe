@@ -115,7 +115,7 @@ export function AuthPage({ signedIn }: { signedIn: (token: string) => void }) {
               <button className="quiet" type="button" disabled={busy} onClick={returnToSignup}>Request another link</button>
             ) : (
               <button className="quiet" type="button" disabled={busy} onClick={() => { setRegistering(!registering); setError('') }}>
-                {registering ? 'I already have an account' : 'Create a RaceSafe account'}
+                {registering ? 'I already have an account' : 'Create account'}
               </button>
             )}
           </>
