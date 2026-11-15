@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { makeApi, skillList } from '../api'
+import { Brand } from '../components/WorkspaceUI'
 
 function readVerificationToken() {
   return new URLSearchParams(window.location.hash.slice(1)).get('verify-email') ?? ''
@@ -81,11 +82,17 @@ export function AuthPage({ signedIn }: { signedIn: (token: string) => void }) {
   return (
     <main className="auth-layout">
       <div className="auth-intro">
-        <span className="brand">RaceSafe</span>
-        <h1>Find your hackathon team.</h1>
-        <p>Browse teams with open seats, connect with people who bring different skills, or start your own team.</p>
+        <Brand />
+        <div className="auth-copy">
+          <h1>Find your hackathon team.</h1>
+          <p>Find an open seat, meet teammates, and manage your roster in one place.</p>
+        </div>
+        <div className="auth-art" aria-hidden="true">
+          <span className="art-card art-one"><i /><i /><i /></span>
+          <span className="art-card art-two"><i /><i /></span>
+        </div>
       </div>
-      <section className="panel auth-panel" aria-labelledby="auth-title">
+      <section className="auth-panel" aria-labelledby="auth-title">
         <h2 id="auth-title">{title}</h2>
         {verificationSent ? (
           <>

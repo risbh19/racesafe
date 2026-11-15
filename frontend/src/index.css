@@ -1,35 +1,83 @@
+@font-face {
+  font-family: 'DM Sans';
+  src: url('./assets/dm-sans-latin.woff2') format('woff2');
+  font-weight: 400 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  font-family: Inter, system-ui, sans-serif;
-  color: #172334;
-  background: #f3f5f7;
-  line-height: 1.5;
+  font-family: 'DM Sans', 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  color: #182520;
+  background: #f5f7f2;
   font-weight: 400;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
-  --navy: #0e263c;
-  --accent: #006249;
-  --accent-hover: #004d39;
-  --border: #c4ced8;
-  --muted: #45556b;
+  --ink: #182520;
+  --muted: #52635b;
   --surface: #fff;
+  --canvas: #f5f7f2;
+  --border: #dce5dc;
+  --control-border: #bdcbc0;
+  --accent: #176347;
+  --accent-hover: #104b37;
+  --accent-soft: #e8f3eb;
+  --forest: #122f27;
+  --lime: #d8f49c;
+  --shadow: 0 1px 2px #142f2210;
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; }
-h1, h2, p { margin-block: 0; overflow-wrap: anywhere; }
-h1 { font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1.1; letter-spacing: -0.04em; }
-h2 { font-size: 1.22rem; line-height: 1.25; }
-p { margin-block: 0.4rem; }
+body { margin: 0; min-height: 100vh; }
+h1, h2, h3, p, ul { margin: 0; }
+h1, h2, h3, p { overflow-wrap: anywhere; }
+h1 { font-size: clamp(2.05rem, 4vw, 3.15rem); letter-spacing: -.055em; line-height: 1.06; font-weight: 750; }
+h2 { font-size: 1.3rem; letter-spacing: -.028em; line-height: 1.2; font-weight: 750; }
 a { color: var(--accent); }
 button, input, textarea { font: inherit; }
-button, input, textarea { min-height: 44px; border: 1px solid var(--border); border-radius: 8px; }
-button { padding: 0.55rem 0.85rem; background: #fff; color: #172334; cursor: pointer; font-weight: 600; }
-button:hover { background: #eef5f3; }
-button:disabled { cursor: default; opacity: 0.6; }
+button {
+  appearance: none;
+  min-height: 42px;
+  padding: .55rem .9rem;
+  border: 1px solid var(--control-border);
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 160ms, border-color 160ms, color 160ms;
+}
+button:hover { background: #f1f6f0; border-color: #a4b7aa; }
+button:disabled { cursor: default; opacity: .55; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-button.primary:hover { background: var(--accent-hover); }
-button[aria-pressed="true"] { border-color: #006249; background: #e0f2ec; color: #004d39; }
-input, textarea { padding: 0.55rem 0.7rem; background: white; color: #172334; width: 100%; }
+button.primary:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.quiet, button.text-link { background: transparent; border-color: transparent; color: var(--accent); }
+button.quiet:hover, button.text-link:hover { background: var(--accent-soft); }
+button.danger { border-color: #a63236; background: #a63236; color: #fff; }
+button.danger:hover { border-color: #812528; background: #812528; }
+button.danger-text { color: #9a3034; }
+button.danger-text:hover { color: #822629; background: #fcebea; }
+input, textarea {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: .6rem .78rem;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  font-weight: 450;
+}
+input::placeholder, textarea::placeholder { color: #607066; }
 textarea { resize: vertical; }
-label { display: grid; gap: 0.3rem; font-weight: 550; }
-:focus-visible { outline: 3px solid #886100; outline-offset: 3px; }
-summary { cursor: pointer; font-weight: 650; min-height: 32px; }
+label { display: grid; gap: .4rem; color: var(--ink); font-weight: 650; font-size: .93rem; }
+summary { cursor: pointer; font-weight: 700; }
+:focus-visible { outline: 3px solid #23765a; outline-offset: 3px; }
+[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+}
