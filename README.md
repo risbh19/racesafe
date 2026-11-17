@@ -1,10 +1,37 @@
+<div align="center">
+
 # RaceSafe
+
+**One available seat should create one membership.**
 
 RaceSafe helps hackathon participants find teammates, request to join, and redeem expiring invites. PostgreSQL enforces the capacity and membership rules even when multiple requests compete for one seat.
 
+![Python](https://img.shields.io/badge/Python-334155?style=flat-square)
+![FastAPI](https://img.shields.io/badge/FastAPI-334155?style=flat-square)
+![React](https://img.shields.io/badge/React-334155?style=flat-square)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-334155?style=flat-square)
+
+[Quick start](#quick-start) · [Testing](#testing)
+
+</div>
+
+---
+
 [Live demo](https://racesafe.onrender.com) · [Design note](docs/DESIGN.md) · [Load-test report](docs/LOAD-TEST.md) · [Walkthrough](docs/WALKTHROUGH.md)
 
-## Run the full stack
+## The problem
+
+Several participants can request the same final seat at once. RaceSafe handles that contention in the database and keeps team membership, capacity, audit events and retries consistent.
+
+## At a glance
+
+| Area | What it covers |
+| --- | --- |
+| Teams | Recruiting drafts, formed teams and leader approval |
+| Concurrency | Capacity enforcement and idempotent membership requests |
+| Visibility | Live updates, retained audit history and operational metrics |
+
+## Quick start
 
 With Docker running, run this from the repository root.
 
@@ -38,7 +65,7 @@ Open [the React app](http://localhost:5173). [API docs](http://127.0.0.1:8000/do
 
 A participant starts a recruiting draft. The draft becomes a team as soon as it reaches the minimum. A leader can finalize a formed team to close its seats. A departure below the minimum returns an active or finalized team to draft status. The last departure deletes the team. The final member can read its retained audit history under **Archived teams**.
 
-## Tests
+## Testing
 
 CI uses PostgreSQL 16, runs the API suite and server-kill test, repeats concurrency tests five times, checks the browser workflow, and smoke-tests Docker Compose. To run locally, create a **disposable database ending in _test** and set its URL before running the commands below. The tests truncate app tables in this database.
 
